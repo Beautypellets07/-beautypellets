@@ -115,17 +115,12 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{minZoom:4,maxZ
 
 const geoCache=JSON.parse(localStorage.getItem("geoCachePellets_EU")||"{}");
 const saveGeo=()=>localStorage.setItem("geoCachePellets_EU",JSON.stringify(geoCache));
-const num=v=>{v=String(v??"").trim().replace(",",".");const n=+v;return isFinite(n)?n:NaN};
+const num=v=>{v=String(v??"").trim().replace(",",".");v=v.replace(/€/g,"").trim();const n=+v;return isFinite(n)?n:NaN};
 const lc=s=>String(s??"").toLowerCase().trim();
 const str=v=>String(v??"").trim();
 const sackAktiv=()=>document.getElementById("chkSackFireflies").checked||document.getElementById("chkSack15kg").checked;
 
-function colorForPrice(p,kein){
-  if(kein||!isFinite(p)||p<=0) return "#9e9e9e";
-  if(p<=260) return "green";
-  if(p<285) return "orange";
-  return "red";
-}
+function colorForPrice(p,kein){if(kein||!isFinite(p)||p<=0)return"#9e9e9e";if(p<=260)return"green";if(p<285)return"orange";return"red"}
 
 async function geocode(q){
   if(geoCache[q]?.country_code) return geoCache[q];
@@ -149,6 +144,19 @@ function resetMatchHighlights(){
   matchMarkers=[];
 }
 
+/* ===== FIX: Klicks im Menü dürfen NICHT die Map klicken ===== */
+function stopEvt(el){
+  if(!el) return;
+  L.DomEvent.disableClickPropagation(el);
+  L.DomEvent.disableScrollPropagation(el);
+  el.addEventListener("mousedown", e=>e.stopPropagation());
+  el.addEventListener("click", e=>e.stopPropagation());
+  el.addEventListener("dblclick", e=>e.stopPropagation());
+  el.addEventListener("contextmenu", e=>e.stopPropagation());
+  el.addEventListener("wheel", e=>e.stopPropagation(), {passive:true});
+  el.addEventListener("touchstart", e=>e.stopPropagation(), {passive:true});
+}
+
 /* =========================
    FIRMENTABELLE: Preis = Spalte C
    ========================= */
@@ -163,24 +171,16 @@ function parseFirmenArray(table){
   const headers=(table[0]||[]).map(x=>str(x));
   const rows=table.slice(1);
 
-  let nameIdx = findIndex(headers, ["firma","name","werk"]);
-  if(nameIdx<0) nameIdx = 0;
+  let nameIdx = findIndex(headers, ["firma","name","werk"]); if(nameIdx<0) nameIdx = 0;
+  let ortIdx  = findIndex(headers, ["ort","stadt","standort","adresse","location"]); if(ortIdx<0) ortIdx = 1;
 
-  let ortIdx = findIndex(headers, ["ort","stadt","standort","adresse","location"]);
-  if(ortIdx<0) ortIdx = 1;
+  const preisIdx = 2; // Spalte C
 
-  // WICHTIG: Werkpreis ist IMMER Spalte C (Index 2)
-  const preisIdx = 2;
-
-  // Sackpreis: per Header suchen, sonst Spalte D (Index 3)
   let sackIdx = findIndex(headers, ["sackwarenpreis","sackwarepreis","preis_sack","sackpreis","preis sack"]);
   if(sackIdx<0) sackIdx = 3;
 
-  let zertIdx = findIndex(headers, ["zertifikat","zertifikate","zert","cert"]);
-  if(zertIdx<0) zertIdx = -1;
-
-  let sackTxtIdx = findIndex(headers, ["sackware","sack","bag","bagged"]);
-  if(sackTxtIdx<0) sackTxtIdx = -1;
+  let zertIdx = findIndex(headers, ["zertifikat","zertifikate","zert","cert"]); if(zertIdx<0) zertIdx = -1;
+  let sackTxtIdx = findIndex(headers, ["sackware","sack","bag","bagged"]); if(sackTxtIdx<0) sackTxtIdx = -1;
 
   return rows
     .filter(r=>str(r[nameIdx]) && str(r[ortIdx]))
@@ -200,7 +200,6 @@ function parseFirmenArray(table){
     });
 }
 
-/* Kunden normal (Header=true) */
 function parseKunden(rows){
   const keys=Object.keys(rows[0]||{}),
     nameKey=(keys.find(k=>["name","kunde","kundenname"].includes(lc(k)))||keys[0]),
@@ -211,8 +210,6 @@ function parseKunden(rows){
   return rows.map(x=>({name:str(x[nameKey]),ort:str(x[ortKey]),lose:lc(x[loseKey]),sackware:lc(x[sackKey]),sonstige:lc(x[sonstKey])})).filter(x=>x.name&&x.ort);
 }
 
-/* Für Farben: wenn Preis fehlt -> grau, sonst grün/orange/rot
-   Für Berechnungen: wenn Preis fehlt -> Durchschnitt als Fallback */
 function normalizePreise(d){
   const w=d.filter(x=>isFinite(x.preis)&&x.preis>0);
   const s=d.filter(x=>isFinite(x.preisSack)&&x.preisSack>0);
@@ -223,11 +220,9 @@ function normalizePreise(d){
     x.keinPreisWerk = !(isFinite(x._preisOrig) && x._preisOrig>0);
     x.keinPreisSack = !(isFinite(x._preisSackOrig) && x._preisSackOrig>0);
 
-    // für Rechenlogik fallback
     if(x.keinPreisWerk) x.preis = avgW;
     if(x.keinPreisSack) x.preisSack = avgS;
 
-    // Farben nur nach "hat echten Preis?"
     x.farbeWerk = colorForPrice(x._preisOrig, x.keinPreisWerk);
     x.farbeSack = colorForPrice(x._preisSackOrig, x.keinPreisSack);
     return x;
@@ -256,14 +251,11 @@ function tooltipFirma(m){
 
 async function ladeDaten(){
   const pF=new Promise(res=>Papa.parse(sheetUrlFirmen,{
-    download:true,
-    header:false,              // <<< FIX: damit Spaltenindex sicher ist
-    skipEmptyLines:true,
+    download:true, header:false, skipEmptyLines:true,
     complete:r=>{ try{ res(normalizePreise(parseFirmenArray(r.data||[]))) }catch(e){ res([]) } }
   }));
   const pK=new Promise(res=>Papa.parse(sheetUrlKunden,{
-    download:true,
-    header:true,
+    download:true, header:true,
     complete:r=>{ try{ res(parseKunden(r.data||[])) }catch(e){ res([]) } }
   }));
   [werke,kunden]=await Promise.all([pF,pK]);
@@ -275,10 +267,12 @@ async function buildMap(){
   for(const w of werke){
     const c=geoCache[w.ort]?.country_code?geoCache[w.ort]:await geocode(w.ort); if(!c) continue;
     const farbe=sackAktiv()?w.farbeSack:w.farbeWerk;
+
     const m=L.circleMarker([c.lat,c.lon],{radius:8,color:farbe,fillColor:farbe,fillOpacity:.85})
       .bindTooltip("",{sticky:true})
       .on("tooltipopen",()=>m.getTooltip().setContent(tooltipFirma({...w,country_code:c.country_code})))
       .on("click",()=>pickPoint(w.firma,c));
+
     alleMarker.push({type:"firma",marker:m,...w,country_code:c.country_code||"", _coord:{lat:c.lat,lon:c.lon}});
     bounds.extend([c.lat,c.lon]);
   }
@@ -368,7 +362,7 @@ async function showRouteByCoords(aLabel,aCoord,bLabel,bCoord){
   map.fitBounds(routeLine.getBounds(),{padding:[40,40]});
 }
 
-/* ===== Rechtsklick-Menü: Zielpreis Suche ===== */
+/* ===== Rechtsklick-Menü ===== */
 function openCustomerMenu(kunde, coord, mouseEvent){
   closeCtx();
   resetMatchHighlights();
@@ -406,6 +400,10 @@ function openCustomerMenu(kunde, coord, mouseEvent){
   `;
 
   cont.appendChild(ctxEl);
+
+  /* <<< FIX hier: Menü blockt Klicks zur Map */
+  stopEvt(ctxEl);
+
   ctxEl.querySelector("#ctxClose").addEventListener("click", closeCtx);
 
   const input = ctxEl.querySelector("#ctxPrice");
@@ -489,7 +487,7 @@ async function runTargetSearch(type, targetPrice){
   });
 }
 
-/* ===== Layer/Filter ===== */
+/* ===== Filter / Layer ===== */
 function updateLayers(){
   if(routeLine){map.removeLayer(routeLine);routeLine=null} map.closePopup(); selectedPoints=[];
   if(searchMarker){map.removeLayer(searchMarker);searchMarker=null}
@@ -541,49 +539,13 @@ function pickPoint(label,coord){
   if(selectedPoints.length===2){const [a,b]=selectedPoints; selectedPoints=[]; showRoute(a,b);}
 }
 
-async function showRoute(a,b){
-  const osrm=`https://router.project-osrm.org/route/v1/driving/${a.coord.lon},${a.coord.lat};${b.coord.lon},${b.coord.lat}?overview=full&geometries=geojson`;
-  let distKm=null, coords=null, dashed=false, durStr="";
-  try{
-    const res=await fetch(osrm);
-    const data=res.ok?await res.json():null;
-    if(data?.routes?.length){
-      const r=data.routes[0];
-      distKm=r.distance/1000;
-      const min=r.duration/60, h=Math.floor(min/60), m=Math.round(min%60);
-      durStr=h?`${h}h ${m}min`:`${m}min`;
-      coords=r.geometry.coordinates.map(c=>[c[1],c[0]]);
-    }
-  }catch(e){}
-  if(!distKm){
-    distKm=luftlinieKm(a.coord,b.coord);
-    coords=[[a.coord.lat,a.coord.lon],[b.coord.lat,b.coord.lon]];
-    dashed=true;
-  }
+/* ===== Schließen: NUR wenn außerhalb geklickt wird ===== */
+document.addEventListener("mousedown",(e)=>{
+  if(!ctxEl) return;
+  if(ctxEl.contains(e.target)) return; // Klick im Menü -> offen lassen
+  closeCtx();
+});
 
-  const useSack=sackAktiv();
-  const firm=werke.find(w=>w.firma===a.label||w.firma===b.label);
-  const firmenPreis=firm?(useSack?firm.preisSack:firm.preis):0;
-
-  const {total, preisProKm} = calcDeliveredPrice(distKm, (firmenPreis||0));
-
-  if(routeLine) map.removeLayer(routeLine);
-  routeLine=L.polyline(coords,{color:"blue",weight:5,opacity:.85,dashArray:dashed?"8 8":null}).addTo(map);
-  const mid=coords[Math.floor(coords.length/2)];
-  L.popup().setLatLng(mid).setContent(`
-    <b>Route:</b> ${a.label} ↔ ${b.label}<br>
-    <b>Entfernung:</b> ${distKm.toFixed(1)} km ${dashed?"(Luftlinie)":"(Straße)"}<br>
-    ${durStr?`<b>Dauer:</b> ${durStr}<br>`:""}
-    <b>Preis pro km:</b> ${preisProKm.toFixed(2)} €<br>
-    <b>${useSack?"Sackware-Preis":"Werkspreis"}:</b> ${(firmenPreis||0).toFixed(2)} €<br>
-    <b>Gesamtkosten:</b> <span style="color:green;font-size:1.1em">${total.toFixed(2)} €</span>
-    ${dashed?`<br><small>Keine Straßenroute verfügbar → Luftlinie gestrichelt.</small>`:""}
-  `).openOn(map);
-  map.fitBounds(routeLine.getBounds(),{padding:[40,40]});
-}
-
-/* Klick irgendwo: Kontextmenü schließen */
-map.on("click",()=>{ closeCtx(); });
 map.on("movestart", closeCtx);
 map.on("zoomstart", closeCtx);
 
