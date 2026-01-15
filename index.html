@@ -155,15 +155,44 @@ function resetMatchHighlights(){
   matchMarkers=[];
 }
 function findKey(keys,cands){cands=cands.map(lc);return keys.find(k=>cands.includes(lc(k)))}
+
+/* ========= WICHTIG: Preis aus Spalte C erzwingen (Fallback) ========= */
 function parseFirmen(rows){
-  const keys=Object.keys(rows[0]||{}), nameKey=findKey(keys,["firma","name","werk"])||keys[0], ortKey=findKey(keys,["ort","stadt","standort","adresse","location"])||keys[1];
-  const preisKey=findKey(keys,["preis","price","werkspreis","€/t"]), sackPreisKey=findKey(keys,["sackwarenpreis","sackwarepreis","preis_sack","sackpreis","preis sack"]);
-  const zertKey=findKey(keys,["zertifikat","zertifikate","zert","cert"]), sackKey=findKey(keys,["sackware","sack","bag","bagged"]);
-  return rows.filter(x=>str(x[nameKey])&&str(x[ortKey])).map(x=>{
-    const preis=num(x[preisKey]), preisSack=num(x[sackPreisKey]);
-    return {firma:str(x[nameKey]), ort:str(x[ortKey]), preis, preisSack, zert:str(x[zertKey]), sack:str(x[sackKey])};
-  });
+  const keys=Object.keys(rows[0]||{});
+  const nameKey=findKey(keys,["firma","name","werk"])||keys[0];
+  const ortKey=findKey(keys,["ort","stadt","standort","adresse","location"])||keys[1];
+
+  // Werkpreis: erst über Header suchen, wenn nicht gefunden → SPALTE C (keys[2])
+  let preisKey=findKey(keys,["preis","price","werkspreis","€/t","eur/t","eur pro t","werk preis"]);
+  if(!preisKey) preisKey = keys[2]; // <- Spalte C
+
+  // Sackpreis: wie gehabt, wenn nicht gefunden → SPALTE D (keys[3]) als sinnvoller Fallback
+  let sackPreisKey=findKey(keys,["sackwarenpreis","sackwarepreis","preis_sack","sackpreis","preis sack"]);
+  if(!sackPreisKey) sackPreisKey = keys[3]; // optional fallback
+
+  const zertKey=findKey(keys,["zertifikat","zertifikate","zert","cert"]);
+  const sackKey=findKey(keys,["sackware","sack","bag","bagged"]);
+
+  return rows
+    .filter(x=>str(x[nameKey])&&str(x[ortKey]))
+    .map(x=>{
+      const preisRaw = num(x[preisKey]);
+      const preisSackRaw = num(x[sackPreisKey]);
+      return {
+        firma:str(x[nameKey]),
+        ort:str(x[ortKey]),
+        preis: preisRaw,
+        preisSack: preisSackRaw,
+        zert:str(x[zertKey]),
+        sack:str(x[sackKey]),
+
+        // original speichern (damit Tooltip nicht mit Durchschnitt “lügt”)
+        _preisOrig: preisRaw,
+        _preisSackOrig: preisSackRaw
+      };
+    });
 }
+
 function parseKunden(rows){
   const keys=Object.keys(rows[0]||{}),
     nameKey=findKey(keys,["name","kunde","kundenname"])||keys[0],
@@ -198,8 +227,11 @@ function updateCountryButtonLabel(){
 
 function tooltipFirma(m){
   const useSack=sackAktiv();
-  const preisNow=(useSack&&isFinite(m.preisSack)&&m.preisSack>0)?m.preisSack:m.preis;
-  const preisTxt=isFinite(preisNow)&&preisNow>0?`${preisNow.toFixed(2)} €`:"–";
+
+  // Tooltip soll echte Preise zeigen: wenn Preis fehlt → "–"
+  const preisNow = useSack ? (m.keinPreisSack ? NaN : m._preisSackOrig) : (m.keinPreisWerk ? NaN : m._preisOrig);
+  const preisTxt = (isFinite(preisNow)&&preisNow>0) ? `${preisNow.toFixed(2)} €` : "–";
+
   const z=m.zert?`<br><b>Zertifikat:</b> ${m.zert}`:"";
   const s=m.sack?`<br><b>Sackware:</b> ${m.sack}`:"";
   return `<b>${m.firma}</b><br>${m.ort}<br>${preisTxt}${z}${s}`;
@@ -269,7 +301,6 @@ function calcDeliveredPrice(distKm, basePrice){
 }
 
 async function showRouteByCoords(aLabel,aCoord,bLabel,bCoord){
-  // Reuse deiner bestehenden showRoute-Logik, aber mit festen Punkten
   const osrm=`https://router.project-osrm.org/route/v1/driving/${aCoord.lon},${aCoord.lat};${bCoord.lon},${bCoord.lat}?overview=full&geometries=geojson`;
   let distKm=null, coords=null, dashed=false, durStr="";
   try{
@@ -289,7 +320,6 @@ async function showRouteByCoords(aLabel,aCoord,bLabel,bCoord){
     dashed=true;
   }
 
-  // Firm base price finden (wenn aLabel oder bLabel eine Firma ist)
   const useSack = sackAktiv();
   const firm = werke.find(w=>w.firma===aLabel||w.firma===bLabel);
   const base = firm ? (useSack ? firm.preisSack : firm.preis) : 0;
@@ -375,7 +405,6 @@ async function runTargetSearch(type, targetPrice){
   const resBox = ctxEl.querySelector("#ctxResults");
   resBox.innerHTML = `<div class="small">Suche…</div>`;
 
-  // nur Firmen, die gerade sichtbar sind (Filter aktiv)
   const firmsVisible = alleMarker
     .filter(m => m.type==="firma" && map.hasLayer(m.marker))
     .map(m => ({
@@ -384,14 +413,13 @@ async function runTargetSearch(type, targetPrice){
     }))
     .filter(m => isFinite(m.base) && m.base>0);
 
-  // Performance: erst nach Luftlinie sortieren, dann OSRM für die N nächstgelegenen
   const c = ctxCustomer.coord;
   const pre = firmsVisible.map(f=>{
     const d0 = luftlinieKm({lat:c.lat,lon:c.lon},{lat:f._coord.lat,lon:f._coord.lon});
     return {...f, d0};
   }).sort((a,b)=>a.d0-b.d0);
 
-  const LIMIT = 35; // OSRM Calls begrenzen
+  const LIMIT = 35;
   const candidates = pre.slice(0, Math.min(LIMIT, pre.length));
 
   const matches = [];
@@ -400,13 +428,11 @@ async function runTargetSearch(type, targetPrice){
     try{
       dist = await osrmDistKm({lat:c.lat,lon:c.lon},{lat:f._coord.lat,lon:f._coord.lon});
     }catch(e){}
-    if(!dist) dist = f.d0; // fallback Luftlinie
+    if(!dist) dist = f.d0;
     const {total, preisProKm} = calcDeliveredPrice(dist, f.base);
 
     if(total <= targetPrice){
-      matches.push({
-        f, distKm: dist, total, preisProKm
-      });
+      matches.push({ f, distKm: dist, total, preisProKm });
     }
   }
 
@@ -417,7 +443,6 @@ async function runTargetSearch(type, targetPrice){
     return;
   }
 
-  // Highlight Treffer (kurz)
   resetMatchHighlights();
   for(const m of matches.slice(0,12)){
     const mm = m.f;
@@ -440,7 +465,6 @@ async function runTargetSearch(type, targetPrice){
 
   resBox.innerHTML = html + `<div class="small">Zeige ${Math.min(20,matches.length)} von ${matches.length} Treffern.</div>`;
 
-  // Klick auf Ergebnis -> Route zeichnen Kunde ↔ Firma
   [...resBox.querySelectorAll(".item")].forEach(el=>{
     el.addEventListener("click", ()=>{
       const idx = +el.getAttribute("data-i");
@@ -448,7 +472,6 @@ async function runTargetSearch(type, targetPrice){
       const firmCoord = m.f._coord;
       closeCtx();
       showRouteByCoords(ctxCustomer.name, ctxCustomer.coord, m.f.firma, firmCoord);
-      // Tooltip öffnen
       try{ m.f.marker.openTooltip?.(); }catch(e){}
     });
   });
@@ -548,9 +571,7 @@ async function showRoute(a,b){
 }
 
 /* Klick irgendwo: Kontextmenü schließen */
-map.on("click",()=>{
-  closeCtx();
-});
+map.on("click",()=>{ closeCtx(); });
 map.on("movestart", closeCtx);
 map.on("zoomstart", closeCtx);
 
