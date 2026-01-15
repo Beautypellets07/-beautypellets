@@ -1,9 +1,14 @@
-<!DOCTYPE html><html lang="de"><head>
-<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Pelletwerke – Europa Preiskarte</title>
+
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
 <style>
 html,body{height:100%;margin:0}#map{height:100%;width:100%}
 .box{position:absolute;background:#fff;padding:8px 10px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,.12);font:14px/1.3 system-ui,Arial;z-index:2000}
@@ -51,7 +56,11 @@ html,body{height:100%;margin:0}#map{height:100%;width:100%}
   border:1px solid #ddd;background:#fff;border-radius:8px;cursor:pointer;
   padding:2px 8px; line-height:1.6;
 }
-</style></head><body><div id="map"></div>
+</style>
+</head>
+
+<body>
+<div id="map"></div>
 
 <div class="box search">
   🔍 <input id="searchInput" placeholder="Firma, Kunde oder Ort suchen…">
@@ -271,7 +280,7 @@ async function buildMap(){
     const m=L.circleMarker([c.lat,c.lon],{radius:8,color:farbe,fillColor:farbe,fillOpacity:.85})
       .bindTooltip("",{sticky:true})
       .on("tooltipopen",()=>m.getTooltip().setContent(tooltipFirma({...w,country_code:c.country_code})))
-      .on("click",()=>pickPoint(w.firma,c));
+      .on("click",()=>pickPoint(w.firma,{lat:c.lat,lon:c.lon}));
 
     alleMarker.push({type:"firma",marker:m,...w,country_code:c.country_code||"", _coord:{lat:c.lat,lon:c.lon}});
     bounds.extend([c.lat,c.lon]);
@@ -285,7 +294,7 @@ async function buildMap(){
 
     const m=L.marker([c.lat,c.lon],{icon})
       .bindTooltip(`<b>${k.name}</b><br>${k.ort}<br><small>Rechtsklick: Zielpreis-Suche</small>`,{sticky:true})
-      .on("click",()=>pickPoint(k.name,c))
+      .on("click",()=>pickPoint(k.name,{lat:c.lat,lon:c.lon}))
       .on("contextmenu",(e)=>{
         e.originalEvent?.preventDefault?.();
         openCustomerMenu(k,{lat:c.lat,lon:c.lon},e.originalEvent);
@@ -342,7 +351,7 @@ async function showRouteByCoords(aLabel,aCoord,bLabel,bCoord){
   }
 
   const useSack = sackAktiv();
-  const firm = werke.find(w=>w.firma===aLabel||w.firma===bLabel);
+  const firm = werke.find(w=>w.firma===aLabel || w.firma===bLabel);
   const base = firm ? (useSack ? firm.preisSack : firm.preis) : 0;
 
   const {total, preisProKm} = calcDeliveredPrice(distKm, base);
@@ -360,6 +369,11 @@ async function showRouteByCoords(aLabel,aCoord,bLabel,bCoord){
     ${dashed?`<br><small>Keine Straßenroute verfügbar → Luftlinie gestrichelt.</small>`:""}
   `).openOn(map);
   map.fitBounds(routeLine.getBounds(),{padding:[40,40]});
+}
+
+/* ✅ Wrapper (damit pickPoint nicht crasht) */
+function showRoute(a,b){
+  return showRouteByCoords(a.label, a.coord, b.label, b.coord);
 }
 
 /* ===== Rechtsklick-Menü ===== */
@@ -401,7 +415,6 @@ function openCustomerMenu(kunde, coord, mouseEvent){
 
   cont.appendChild(ctxEl);
 
-  /* <<< FIX hier: Menü blockt Klicks zur Map */
   stopEvt(ctxEl);
 
   ctxEl.querySelector("#ctxClose").addEventListener("click", closeCtx);
@@ -542,7 +555,7 @@ function pickPoint(label,coord){
 /* ===== Schließen: NUR wenn außerhalb geklickt wird ===== */
 document.addEventListener("mousedown",(e)=>{
   if(!ctxEl) return;
-  if(ctxEl.contains(e.target)) return; // Klick im Menü -> offen lassen
+  if(ctxEl.contains(e.target)) return;
   closeCtx();
 });
 
@@ -563,6 +576,7 @@ document.addEventListener("change",e=>{
 countryDropdownBtn.addEventListener("click",()=>countryDropdownMenu.style.display=(countryDropdownMenu.style.display==="block"?"none":"block"));
 document.addEventListener("click",e=>{if(!countryDropdown.contains(e.target)) countryDropdownMenu.style.display="none"});
 
+/* ✅ SUCHEN + ORT-MARKER MIT RECHTSKLICK-MENÜ */
 searchInput.addEventListener("keydown",async e=>{
   if(e.key!=="Enter") return;
   const raw=e.target.value.trim(); if(!raw) return;
@@ -578,16 +592,46 @@ searchInput.addEventListener("keydown",async e=>{
   });
 
   const bounds=L.latLngBounds();
-  matches.forEach((m,i)=>{ if(!map.hasLayer(m.marker)) map.addLayer(m.marker); bounds.extend(m.marker.getLatLng()); if(i===0) m.marker.openTooltip?.(); });
+  matches.forEach((m,i)=>{
+    if(!map.hasLayer(m.marker)) map.addLayer(m.marker);
+    bounds.extend(m.marker.getLatLng());
+    if(i===0) m.marker.openTooltip?.();
+  });
 
   const geo=await geocode(raw);
   if(geo){
     const ll=[geo.lat,geo.lon];
+    const coordObj = {lat: geo.lat, lon: geo.lon};
+
     searchMarker=L.circleMarker(ll,{radius:8,color:"blue",fillColor:"blue",fillOpacity:.5}).addTo(map);
-    searchMarker.bindPopup(`<b>${raw}</b>${geo.country?`<br>${geo.country}`:""}<br><small>Jetzt Werk/Händler anklicken, um Route zu berechnen.</small>`).openPopup();
+
+    searchMarker.bindPopup(
+      `<b>${raw}</b>${geo.country?`<br>${geo.country}`:""}<br><small>Rechtsklick: Zielpreis-Suche</small>`
+    );
+
+    searchMarker.bindTooltip(
+      `<b>${raw}</b><br><small>Rechtsklick: Zielpreis-Suche</small>`,
+      {sticky:true}
+    );
+
+    // Klick = als Punkt für Route wählen
+    selectedPoints.push({label:raw,coord:coordObj});
+    searchMarker.on("click",()=>{
+      selectedPoints=[{label:raw,coord:coordObj}];
+      searchMarker.openPopup();
+    });
+
+    // ✅ RECHTSKLICK = Zielpreis-Menü öffnen (wie bei Kunde)
+    searchMarker.on("contextmenu",(ev)=>{
+      ev.originalEvent?.preventDefault?.();
+      openCustomerMenu(
+        { name: raw, ort: geo.country || raw },
+        coordObj,
+        ev.originalEvent
+      );
+    });
+
     bounds.extend(ll);
-    selectedPoints.push({label:raw,coord:{lat:geo.lat,lon:geo.lon}});
-    searchMarker.on("click",()=>selectedPoints=[{label:raw,coord:{lat:geo.lat,lon:geo.lon}}]);
   }
 
   if(bounds.isValid()) map.fitBounds(bounds.pad(.2));
@@ -598,4 +642,6 @@ searchInput.addEventListener("keydown",async e=>{
   await ladeDaten();
   await buildMap();
 })();
-</script></body></html>
+</script>
+</body>
+</html>
