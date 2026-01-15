@@ -32,7 +32,6 @@ html,body{height:100%;margin:0}#map{height:100%;width:100%}
   width:100%; padding:7px 8px; border:1px solid #ccc; border-radius:6px;
   outline:none; box-sizing:border-box;
 }
-.ctxbox .hint{font-size:12px;opacity:.75;margin-top:6px}
 .ctxbox .results{
   margin-top:8px; max-height:240px; overflow:auto;
   border-top:1px solid #eee; padding-top:8px;
@@ -107,7 +106,7 @@ html,body{height:100%;margin:0}#map{height:100%;width:100%}
 </div>
 
 <script>
-/*** ====== CSV LINKS (EINGEBAUT) ====== ***/
+/*** ====== CSV LINKS ====== ***/
 const sheetUrlFirmen = "https://docs.google.com/spreadsheets/d/1fNUc0LJqBXxJdW1JRDfYxYORMuqeks_bHqp7zUq5Zmk/export?format=csv&gid=0";
 const sheetUrlKunden = "https://docs.google.com/spreadsheets/d/1fK_rO1b2eI4sOvUKOufVgmd2lQ85KazPf5Kfm4Iia5I/export?format=csv&gid=0";
 
@@ -118,10 +117,16 @@ const geoCache=JSON.parse(localStorage.getItem("geoCachePellets_EU")||"{}");
 const saveGeo=()=>localStorage.setItem("geoCachePellets_EU",JSON.stringify(geoCache));
 const num=v=>{v=String(v??"").trim().replace(",",".");const n=+v;return isFinite(n)?n:NaN};
 const lc=s=>String(s??"").toLowerCase().trim();
-function str(v){return String(v??"").trim()}
+const str=v=>String(v??"").trim();
 const sackAktiv=()=>document.getElementById("chkSackFireflies").checked||document.getElementById("chkSack15kg").checked;
 
-function colorForPrice(p,kein){if(kein||!isFinite(p)||p<=0)return"#9e9e9e";if(p<=260)return"green";if(p<285)return"orange";return"red"}
+function colorForPrice(p,kein){
+  if(kein||!isFinite(p)||p<=0) return "#9e9e9e";
+  if(p<=260) return "green";
+  if(p<285) return "orange";
+  return "red";
+}
+
 async function geocode(q){
   if(geoCache[q]?.country_code) return geoCache[q];
   const r=await fetch(`https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&q=${encodeURIComponent(q)}&limit=1&accept-language=de`);
@@ -129,87 +134,102 @@ async function geocode(q){
   const a=d[0].address||{}, o={lat:+d[0].lat,lon:+d[0].lon,country:a.country||"",country_code:(a.country_code||"").toLowerCase()};
   geoCache[q]=o; saveGeo(); return o;
 }
+
 const tri=(fill)=>L.divIcon({className:"t",html:`<svg width="24" height="24" viewBox="0 0 24 24"><polygon points="12,2 22,22 2,22" fill="${fill}" stroke="black" stroke-width="1"/></svg>`,iconAnchor:[12,22],popupAnchor:[0,-20]});
 const iconBlue=tri("blue"), iconPurple=tri("purple"), iconOrange=tri("orange");
 
 let werke=[], kunden=[], alleMarker=[], selectedPoints=[], routeLine=null, searchMarker=null;
+let ctxEl=null, ctxCustomer=null, matchMarkers=[];
 
-/* ===== Rechtsklick Menü State ===== */
-let ctxEl=null;
-let ctxCustomer=null; // {name, ort, coord:{lat,lon}}
-let matchMarkers=[]; // gespeicherte Treffer (Marker Style Reset)
-
-/* ===== helpers ===== */
-function closeCtx(){
-  if(ctxEl){ctxEl.remove(); ctxEl=null;}
-  ctxCustomer=null;
-}
+function closeCtx(){ if(ctxEl){ctxEl.remove(); ctxEl=null;} ctxCustomer=null; }
 function resetMatchHighlights(){
   for(const m of matchMarkers){
-    try{
-      if(m.marker.setStyle && m._origStyle){
-        m.marker.setStyle(m._origStyle);
-      }
-    }catch(e){}
+    try{ if(m.marker.setStyle && m._origStyle) m.marker.setStyle(m._origStyle); }catch(e){}
   }
   matchMarkers=[];
 }
-function findKey(keys,cands){cands=cands.map(lc);return keys.find(k=>cands.includes(lc(k)))}
 
-/* ========= WICHTIG: Preis aus Spalte C erzwingen (Fallback) ========= */
-function parseFirmen(rows){
-  const keys=Object.keys(rows[0]||{});
-  const nameKey=findKey(keys,["firma","name","werk"])||keys[0];
-  const ortKey=findKey(keys,["ort","stadt","standort","adresse","location"])||keys[1];
+/* =========================
+   FIRMENTABELLE: Preis = Spalte C
+   ========================= */
+function findIndex(headers, cands){
+  const hs=headers.map(h=>lc(h));
+  const cs=cands.map(c=>lc(c));
+  return hs.findIndex(h=>cs.includes(h));
+}
 
-  // Werkpreis: erst über Header suchen, wenn nicht gefunden → SPALTE C (keys[2])
-  let preisKey=findKey(keys,["preis","price","werkspreis","€/t","eur/t","eur pro t","werk preis"]);
-  if(!preisKey) preisKey = keys[2]; // <- Spalte C
+function parseFirmenArray(table){
+  if(!table || table.length<2) return [];
+  const headers=(table[0]||[]).map(x=>str(x));
+  const rows=table.slice(1);
 
-  // Sackpreis: wie gehabt, wenn nicht gefunden → SPALTE D (keys[3]) als sinnvoller Fallback
-  let sackPreisKey=findKey(keys,["sackwarenpreis","sackwarepreis","preis_sack","sackpreis","preis sack"]);
-  if(!sackPreisKey) sackPreisKey = keys[3]; // optional fallback
+  let nameIdx = findIndex(headers, ["firma","name","werk"]);
+  if(nameIdx<0) nameIdx = 0;
 
-  const zertKey=findKey(keys,["zertifikat","zertifikate","zert","cert"]);
-  const sackKey=findKey(keys,["sackware","sack","bag","bagged"]);
+  let ortIdx = findIndex(headers, ["ort","stadt","standort","adresse","location"]);
+  if(ortIdx<0) ortIdx = 1;
+
+  // WICHTIG: Werkpreis ist IMMER Spalte C (Index 2)
+  const preisIdx = 2;
+
+  // Sackpreis: per Header suchen, sonst Spalte D (Index 3)
+  let sackIdx = findIndex(headers, ["sackwarenpreis","sackwarepreis","preis_sack","sackpreis","preis sack"]);
+  if(sackIdx<0) sackIdx = 3;
+
+  let zertIdx = findIndex(headers, ["zertifikat","zertifikate","zert","cert"]);
+  if(zertIdx<0) zertIdx = -1;
+
+  let sackTxtIdx = findIndex(headers, ["sackware","sack","bag","bagged"]);
+  if(sackTxtIdx<0) sackTxtIdx = -1;
 
   return rows
-    .filter(x=>str(x[nameKey])&&str(x[ortKey]))
-    .map(x=>{
-      const preisRaw = num(x[preisKey]);
-      const preisSackRaw = num(x[sackPreisKey]);
+    .filter(r=>str(r[nameIdx]) && str(r[ortIdx]))
+    .map(r=>{
+      const p = num(r[preisIdx]);
+      const ps = num(r[sackIdx]);
       return {
-        firma:str(x[nameKey]),
-        ort:str(x[ortKey]),
-        preis: preisRaw,
-        preisSack: preisSackRaw,
-        zert:str(x[zertKey]),
-        sack:str(x[sackKey]),
-
-        // original speichern (damit Tooltip nicht mit Durchschnitt “lügt”)
-        _preisOrig: preisRaw,
-        _preisSackOrig: preisSackRaw
+        firma: str(r[nameIdx]),
+        ort: str(r[ortIdx]),
+        preis: p,
+        preisSack: ps,
+        zert: zertIdx>=0 ? str(r[zertIdx]) : "",
+        sack: sackTxtIdx>=0 ? str(r[sackTxtIdx]) : "",
+        _preisOrig: p,
+        _preisSackOrig: ps
       };
     });
 }
 
+/* Kunden normal (Header=true) */
 function parseKunden(rows){
   const keys=Object.keys(rows[0]||{}),
-    nameKey=findKey(keys,["name","kunde","kundenname"])||keys[0],
-    ortKey=findKey(keys,["ort","adresse","standort","anschrift","stadt","location"])||keys[1],
-    loseKey=findKey(keys,["lose"])||"lose",
-    sackKey=findKey(keys,["sackware"])||"sackware",
-    sonstKey=findKey(keys,["sonstige"])||"sonstige";
+    nameKey=(keys.find(k=>["name","kunde","kundenname"].includes(lc(k)))||keys[0]),
+    ortKey=(keys.find(k=>["ort","adresse","standort","anschrift","stadt","location"].includes(lc(k)))||keys[1]),
+    loseKey=(keys.find(k=>lc(k)==="lose")||"lose"),
+    sackKey=(keys.find(k=>lc(k)==="sackware")||"sackware"),
+    sonstKey=(keys.find(k=>lc(k)==="sonstige")||"sonstige");
   return rows.map(x=>({name:str(x[nameKey]),ort:str(x[ortKey]),lose:lc(x[loseKey]),sackware:lc(x[sackKey]),sonstige:lc(x[sonstKey])})).filter(x=>x.name&&x.ort);
 }
 
+/* Für Farben: wenn Preis fehlt -> grau, sonst grün/orange/rot
+   Für Berechnungen: wenn Preis fehlt -> Durchschnitt als Fallback */
 function normalizePreise(d){
-  const w=d.filter(x=>isFinite(x.preis)&&x.preis>0), s=d.filter(x=>isFinite(x.preisSack)&&x.preisSack>0);
-  const avgW=w.length?w.reduce((a,b)=>a+b.preis,0)/w.length:0, avgS=s.length?s.reduce((a,b)=>a+b.preisSack,0)/s.length:0;
+  const w=d.filter(x=>isFinite(x.preis)&&x.preis>0);
+  const s=d.filter(x=>isFinite(x.preisSack)&&x.preisSack>0);
+  const avgW=w.length?w.reduce((a,b)=>a+b.preis,0)/w.length:0;
+  const avgS=s.length?s.reduce((a,b)=>a+b.preisSack,0)/s.length:0;
+
   return d.map(x=>{
-    x.keinPreisWerk=!(isFinite(x.preis)&&x.preis>0); if(x.keinPreisWerk) x.preis=avgW;
-    x.keinPreisSack=!(isFinite(x.preisSack)&&x.preisSack>0); if(x.keinPreisSack) x.preisSack=avgS;
-    x.farbeWerk=colorForPrice(x.preis,x.keinPreisWerk); x.farbeSack=colorForPrice(x.preisSack,x.keinPreisSack);
+    x.keinPreisWerk = !(isFinite(x._preisOrig) && x._preisOrig>0);
+    x.keinPreisSack = !(isFinite(x._preisSackOrig) && x._preisSackOrig>0);
+
+    // für Rechenlogik fallback
+    if(x.keinPreisWerk) x.preis = avgW;
+    if(x.keinPreisSack) x.preisSack = avgS;
+
+    // Farben nur nach "hat echten Preis?"
+    x.farbeWerk = colorForPrice(x._preisOrig, x.keinPreisWerk);
+    x.farbeSack = colorForPrice(x._preisSackOrig, x.keinPreisSack);
     return x;
   });
 }
@@ -227,19 +247,25 @@ function updateCountryButtonLabel(){
 
 function tooltipFirma(m){
   const useSack=sackAktiv();
-
-  // Tooltip soll echte Preise zeigen: wenn Preis fehlt → "–"
-  const preisNow = useSack ? (m.keinPreisSack ? NaN : m._preisSackOrig) : (m.keinPreisWerk ? NaN : m._preisOrig);
-  const preisTxt = (isFinite(preisNow)&&preisNow>0) ? `${preisNow.toFixed(2)} €` : "–";
-
+  const p = useSack ? (m.keinPreisSack ? NaN : m._preisSackOrig) : (m.keinPreisWerk ? NaN : m._preisOrig);
+  const preisTxt = (isFinite(p)&&p>0) ? `${p.toFixed(2)} €` : "–";
   const z=m.zert?`<br><b>Zertifikat:</b> ${m.zert}`:"";
   const s=m.sack?`<br><b>Sackware:</b> ${m.sack}`:"";
   return `<b>${m.firma}</b><br>${m.ort}<br>${preisTxt}${z}${s}`;
 }
 
 async function ladeDaten(){
-  const pF=new Promise(res=>Papa.parse(sheetUrlFirmen,{download:true,header:true,complete:r=>{try{res(normalizePreise(parseFirmen(r.data||[])))}catch(e){res([])}}}));
-  const pK=new Promise(res=>Papa.parse(sheetUrlKunden,{download:true,header:true,complete:r=>{try{res(parseKunden(r.data||[]))}catch(e){res([])}}}));
+  const pF=new Promise(res=>Papa.parse(sheetUrlFirmen,{
+    download:true,
+    header:false,              // <<< FIX: damit Spaltenindex sicher ist
+    skipEmptyLines:true,
+    complete:r=>{ try{ res(normalizePreise(parseFirmenArray(r.data||[]))) }catch(e){ res([]) } }
+  }));
+  const pK=new Promise(res=>Papa.parse(sheetUrlKunden,{
+    download:true,
+    header:true,
+    complete:r=>{ try{ res(parseKunden(r.data||[])) }catch(e){ res([]) } }
+  }));
   [werke,kunden]=await Promise.all([pF,pK]);
 }
 
@@ -263,9 +289,10 @@ async function buildMap(){
     const type=isSonstige?"sonstige":isSackOnly?"sackkunde":"kunde";
     const icon=isSonstige?iconOrange:isSackOnly?iconPurple:iconBlue;
 
-    const m=L.marker([c.lat,c.lon],{icon}).bindTooltip(`<b>${k.name}</b><br>${k.ort}<br><small>Rechtsklick: Zielpreis-Suche</small>`,{sticky:true})
+    const m=L.marker([c.lat,c.lon],{icon})
+      .bindTooltip(`<b>${k.name}</b><br>${k.ort}<br><small>Rechtsklick: Zielpreis-Suche</small>`,{sticky:true})
       .on("click",()=>pickPoint(k.name,c))
-      .on("contextmenu",(e)=>{ // Rechtsklick-Menü
+      .on("contextmenu",(e)=>{
         e.originalEvent?.preventDefault?.();
         openCustomerMenu(k,{lat:c.lat,lon:c.lon},e.originalEvent);
       });
@@ -341,11 +368,10 @@ async function showRouteByCoords(aLabel,aCoord,bLabel,bCoord){
   map.fitBounds(routeLine.getBounds(),{padding:[40,40]});
 }
 
-/* ===== Rechtsklick-Menü: Firmen passend zum Zielpreis suchen ===== */
+/* ===== Rechtsklick-Menü: Zielpreis Suche ===== */
 function openCustomerMenu(kunde, coord, mouseEvent){
   closeCtx();
   resetMatchHighlights();
-
   ctxCustomer = {name:kunde.name, ort:kunde.ort, coord};
 
   const p = map.mouseEventToContainerPoint(mouseEvent);
@@ -380,20 +406,15 @@ function openCustomerMenu(kunde, coord, mouseEvent){
   `;
 
   cont.appendChild(ctxEl);
-
   ctxEl.querySelector("#ctxClose").addEventListener("click", closeCtx);
 
   const input = ctxEl.querySelector("#ctxPrice");
   input.focus();
-
   input.addEventListener("keydown", async (e)=>{
     if(e.key !== "Enter") return;
     const target = num(input.value);
     const type = ctxEl.querySelector("#ctxType").value;
-    if(!isFinite(target) || target<=0){
-      alert("Bitte einen gültigen Zielpreis eingeben.");
-      return;
-    }
+    if(!isFinite(target) || target<=0){ alert("Bitte einen gültigen Zielpreis eingeben."); return; }
     await runTargetSearch(type, target);
   });
 }
@@ -405,10 +426,7 @@ async function runTargetSearch(type, targetPrice){
 
   const firmsVisible = alleMarker
     .filter(m => m.type==="firma" && map.hasLayer(m.marker))
-    .map(m => ({
-      ...m,
-      base: (type==="sack" ? m.preisSack : m.preis)
-    }))
+    .map(m => ({...m, base: (type==="sack" ? m.preisSack : m.preis)}))
     .filter(m => isFinite(m.base) && m.base>0);
 
   const c = ctxCustomer.coord;
@@ -423,15 +441,10 @@ async function runTargetSearch(type, targetPrice){
   const matches = [];
   for(const f of candidates){
     let dist = null;
-    try{
-      dist = await osrmDistKm({lat:c.lat,lon:c.lon},{lat:f._coord.lat,lon:f._coord.lon});
-    }catch(e){}
+    try{ dist = await osrmDistKm({lat:c.lat,lon:c.lon},{lat:f._coord.lat,lon:f._coord.lon}); }catch(e){}
     if(!dist) dist = f.d0;
     const {total, preisProKm} = calcDeliveredPrice(dist, f.base);
-
-    if(total <= targetPrice){
-      matches.push({ f, distKm: dist, total, preisProKm });
-    }
+    if(total <= targetPrice) matches.push({ f, distKm: dist, total, preisProKm });
   }
 
   matches.sort((a,b)=>a.total-b.total);
@@ -468,14 +481,15 @@ async function runTargetSearch(type, targetPrice){
       const idx = +el.getAttribute("data-i");
       const m = matches[idx];
       const firmCoord = m.f._coord;
+      const cust = ctxCustomer;
       closeCtx();
-      showRouteByCoords(ctxCustomer.name, ctxCustomer.coord, m.f.firma, firmCoord);
+      showRouteByCoords(cust.name, cust.coord, m.f.firma, firmCoord);
       try{ m.f.marker.openTooltip?.(); }catch(e){}
     });
   });
 }
 
-/* ===== Map / Filter / Route Grundfunktionen ===== */
+/* ===== Layer/Filter ===== */
 function updateLayers(){
   if(routeLine){map.removeLayer(routeLine);routeLine=null} map.closePopup(); selectedPoints=[];
   if(searchMarker){map.removeLayer(searchMarker);searchMarker=null}
@@ -619,6 +633,7 @@ searchInput.addEventListener("keydown",async e=>{
 });
 
 (async()=>{
-  await ladeDaten(); await buildMap();
+  await ladeDaten();
+  await buildMap();
 })();
 </script></body></html>
