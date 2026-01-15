@@ -499,6 +499,32 @@ async function runTargetSearch(type, targetPrice){
     });
   });
 }
+function clearRoute(){
+  if(routeLine){ map.removeLayer(routeLine); routeLine = null; }
+  map.closePopup();
+  selectedPoints = [];
+}
+
+// Klick auf die Karte (nicht auf Marker/Route) -> Route weg
+map.on("click", (e)=>{
+  // Wenn ein Kontextmenü offen ist, NICHT löschen (optional)
+  if(ctxEl) return;
+
+  // Wenn du auf die Route klickst, soll sie bleiben -> dann NICHT löschen
+  if(routeLine){
+    // Leaflet setzt originalEvent.target auf SVG/Canvas der Linie
+    const t = e.originalEvent?.target;
+    // grober Check: wenn auf den Pfad geklickt wurde (Polyline ist SVG path)
+    if(t && (t.tagName === "path" || t.closest?.("path"))) return;
+  }
+
+  clearRoute();
+});
+
+// ESC-Taste -> Route weg (optional, aber mega praktisch)
+document.addEventListener("keydown", (e)=>{
+  if(e.key === "Escape") clearRoute();
+});
 
 /* ===== Filter / Layer ===== */
 function updateLayers(){
