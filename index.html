@@ -1,1 +1,342 @@
+<!DOCTYPE html><html lang="de"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Pelletwerke – Europa Preiskarte</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<style>
+html,body{height:100%;margin:0}#map{height:100%;width:100%}
+.box{position:absolute;background:#fff;padding:8px 10px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,.12);font:14px/1.3 system-ui,Arial;z-index:2000}
+.search{top:12px;right:12px;width:260px}.legend{bottom:12px;right:12px;min-width:180px;z-index:3000}.cert{bottom:12px;left:12px;z-index:2500}
+.box input[type="checkbox"]{width:14px;height:14px;margin-right:5px;vertical-align:middle}
+.search input{width:100%;padding:6px 8px;border:1px solid #ccc;border-radius:4px;outline:none;box-sizing:border-box;margin-left:4px}
+.cert hr{border:none;height:1px;background:#eee;margin:6px 0}
+.dd{position:relative;display:block;width:100%;margin-top:8px}
+.ddbtn{width:100%;background:#fff;border:1px solid #ccc;border-radius:4px;padding:4px 6px;text-align:left;cursor:pointer;box-sizing:border-box}
+.ddbtn:after{content:"▾";float:right;opacity:.6}
+.ddm{position:absolute;top:110%;left:0;background:#fff;border:1px solid #ccc;border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,.12);z-index:4000;display:none;min-width:160px;max-height:260px;overflow:auto;padding:6px 8px;box-sizing:border-box}
+.ddm label{display:flex;align-items:center;gap:6px;padding:2px 0;cursor:pointer;margin:0;white-space:nowrap}
+</style></head><body><div id="map"></div>
 
+<div class="box search">
+  🔍 <input id="searchInput" placeholder="Firma, Kunde oder Ort suchen…">
+  <b style="display:block;margin-top:6px">Land / Länder filtern</b>
+  <div class="dd" id="countryDropdown">
+    <div class="ddbtn" id="countryDropdownBtn">Alle Länder</div>
+    <div class="ddm" id="countryDropdownMenu">
+      <label><input type="checkbox" class="countryChk" value="all" checked> Alle</label>
+      <label><input type="checkbox" class="countryChk" value="be"> Belgien</label>
+      <label><input type="checkbox" class="countryChk" value="dk"> Dänemark</label>
+      <label><input type="checkbox" class="countryChk" value="de"> Deutschland</label>
+      <label><input type="checkbox" class="countryChk" value="ee"> Estland</label>
+      <label><input type="checkbox" class="countryChk" value="fi"> Finnland</label>
+      <label><input type="checkbox" class="countryChk" value="fr"> Frankreich</label>
+      <label><input type="checkbox" class="countryChk" value="it"> Italien</label>
+      <label><input type="checkbox" class="countryChk" value="lv"> Lettland</label>
+      <label><input type="checkbox" class="countryChk" value="lt"> Litauen</label>
+      <label><input type="checkbox" class="countryChk" value="nl"> Niederlande</label>
+      <label><input type="checkbox" class="countryChk" value="at"> Österreich</label>
+      <label><input type="checkbox" class="countryChk" value="pl"> Polen</label>
+      <label><input type="checkbox" class="countryChk" value="se"> Schweden</label>
+      <label><input type="checkbox" class="countryChk" value="ch"> Schweiz</label>
+      <label><input type="checkbox" class="countryChk" value="sk"> Slowakei</label>
+      <label><input type="checkbox" class="countryChk" value="cz"> Tschechien</label>
+      <label><input type="checkbox" class="countryChk" value="gb"> United Kingdom</label>
+    </div>
+  </div>
+</div>
+
+<div class="box cert">
+  <b>Zertifikate & Sackware</b><br>
+  <label><input type="checkbox" id="chkEnPlus" checked> EnPlus</label><br>
+  <label><input type="checkbox" id="chkDINplus" checked> DINplus</label><br>
+  <label><input type="checkbox" id="chkSURE" checked> SURE</label><br>
+  <label><input type="checkbox" id="chkCPP" checked> CPP</label><br>
+  <label><input type="checkbox" id="chkOhneZert" checked> Kein Zertifikat</label>
+  <hr>
+  <b>Sackware</b><br>
+  <label><input type="checkbox" id="chkSackFireflies"> FireFlies</label><br>
+  <label><input type="checkbox" id="chkSack15kg"> 15 kg</label>
+</div>
+
+<div class="box legend">
+  <b>Filter Farben</b><br>
+  <label><input type="checkbox" id="chkGruen" checked> 🟢 ≤ 260 €</label><br>
+  <label><input type="checkbox" id="chkOrange" checked> 🟠 260–285 €</label><br>
+  <label><input type="checkbox" id="chkRot" checked> 🔴 ≥ 285 €</label><br>
+  <label><input type="checkbox" id="chkGrau" checked> ⚪ kein Preis</label><br>
+  <label><input type="checkbox" id="chkKunden" checked> 🔷 Pellethändler</label><br>
+  <label><input type="checkbox" id="chkSackKunden" checked> 🟣 Sackwaren Händler</label><br>
+  <label><input type="checkbox" id="chkSonstigeKunden" checked> 🔶 Sonstige Kunden</label>
+</div>
+
+<script>
+/*** ====== HIER SPÄTER DEINE CSV LINKS EINFÜGEN ====== ***/
+const sheetUrlFirmen = "";   // z.B. .../export?format=csv
+const sheetUrlKunden = "";   // z.B. .../export?format=csv&gid=0
+
+const map=L.map("map").setView([51,11],5);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{minZoom:4,maxZoom:18,attribution:"&copy; OpenStreetMap"}).addTo(map);
+
+const geoCache=JSON.parse(localStorage.getItem("geoCachePellets_EU")||"{}");
+const saveGeo=()=>localStorage.setItem("geoCachePellets_EU",JSON.stringify(geoCache));
+const num=v=>{v=String(v??"").trim().replace(",",".");const n=+v;return isFinite(n)?n:NaN};
+const lc=s=>String(s??"").toLowerCase().trim();
+const sackAktiv=()=>document.getElementById("chkSackFireflies").checked||document.getElementById("chkSack15kg").checked;
+
+function colorForPrice(p,kein){if(kein||!isFinite(p)||p<=0)return"#9e9e9e";if(p<=260)return"green";if(p<285)return"orange";return"red"}
+async function geocode(q){
+  if(geoCache[q]?.country_code) return geoCache[q];
+  const r=await fetch(`https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&q=${encodeURIComponent(q)}&limit=1&accept-language=de`);
+  const d=await r.json(); if(!d.length) return null;
+  const a=d[0].address||{}, o={lat:+d[0].lat,lon:+d[0].lon,country:a.country||"",country_code:(a.country_code||"").toLowerCase()};
+  geoCache[q]=o; saveGeo(); return o;
+}
+const tri=(fill)=>L.divIcon({className:"t",html:`<svg width="24" height="24" viewBox="0 0 24 24"><polygon points="12,2 22,22 2,22" fill="${fill}" stroke="black" stroke-width="1"/></svg>`,iconAnchor:[12,22],popupAnchor:[0,-20]});
+const iconBlue=tri("blue"), iconPurple=tri("purple"), iconOrange=tri("orange");
+
+let werke=[], kunden=[], alleMarker=[], selectedPoints=[], routeLine=null, searchMarker=null;
+
+function findKey(keys,cands){cands=cands.map(lc);return keys.find(k=>cands.includes(lc(k)))}
+function parseFirmen(rows){
+  const keys=Object.keys(rows[0]||{}), nameKey=findKey(keys,["firma","name","werk"])||keys[0], ortKey=findKey(keys,["ort","stadt","standort","adresse","location"])||keys[1];
+  const preisKey=findKey(keys,["preis","price","werkspreis","€/t"]), sackPreisKey=findKey(keys,["preis_sack","sackpreis","sackwarepreis","preis sack"]);
+  const zertKey=findKey(keys,["zertifikate","zertifikat","zert","cert"]), sackKey=findKey(keys,["sackware","sack","bag","bagged"]);
+  return rows.filter(x=>str(x[nameKey])&&str(x[ortKey])).map(x=>{
+    const preis=num(x[preisKey]), preisSack=num(x[sackPreisKey]);
+    return {firma:str(x[nameKey]), ort:str(x[ortKey]), preis, preisSack, zert:str(x[zertKey]), sack:str(x[sackKey])};
+  });
+}
+function parseKunden(rows){
+  const keys=Object.keys(rows[0]||{}),
+    nameKey=findKey(keys,["name","kunde","kundenname"])||keys[0],
+    ortKey=findKey(keys,["ort","adresse","standort","anschrift","stadt","location"])||keys[1],
+    loseKey=findKey(keys,["lose"])||"lose",
+    sackKey=findKey(keys,["sackware"])||"sackware",
+    sonstKey=findKey(keys,["sonstige"])||"sonstige";
+  return rows.map(x=>({name:str(x[nameKey]),ort:str(x[ortKey]),lose:lc(x[loseKey]),sackware:lc(x[sackKey]),sonstige:lc(x[sonstKey])})).filter(x=>x.name&&x.ort);
+}
+function str(v){return String(v??"").trim()}
+
+function normalizePreise(d){
+  const w=d.filter(x=>isFinite(x.preis)&&x.preis>0), s=d.filter(x=>isFinite(x.preisSack)&&x.preisSack>0);
+  const avgW=w.length?w.reduce((a,b)=>a+b.preis,0)/w.length:0, avgS=s.length?s.reduce((a,b)=>a+b.preisSack,0)/s.length:0;
+  return d.map(x=>{
+    x.keinPreisWerk=!(isFinite(x.preis)&&x.preis>0); if(x.keinPreisWerk) x.preis=avgW;
+    x.keinPreisSack=!(isFinite(x.preisSack)&&x.preisSack>0); if(x.keinPreisSack) x.preisSack=avgS;
+    x.farbeWerk=colorForPrice(x.preis,x.keinPreisWerk); x.farbeSack=colorForPrice(x.preisSack,x.keinPreisSack);
+    return x;
+  });
+}
+
+function getSelectedCountries(){
+  const s=[...document.querySelectorAll(".countryChk")].filter(c=>c.checked).map(c=>c.value);
+  return (!s.length||s.includes("all"))?["all"]:s;
+}
+function updateCountryButtonLabel(){
+  const s=getSelectedCountries(), btn=document.getElementById("countryDropdownBtn");
+  if(s.length===1&&s[0]==="all") return btn.textContent="Alle Länder";
+  const names={be:"BE",dk:"DK",de:"DE",ee:"EE",fi:"FI",fr:"FR",it:"IT",lv:"LV",lt:"LT",nl:"NL",at:"AT",pl:"PL",se:"SE",ch:"CH",sk:"SK",cz:"CZ",gb:"UK"};
+  btn.textContent=s.map(c=>names[c]||c.toUpperCase()).join(", ");
+}
+
+function tooltipFirma(m){
+  const useSack=sackAktiv();
+  const preisNow=(useSack&&isFinite(m.preisSack)&&m.preisSack>0)?m.preisSack:m.preis;
+  const preisTxt=isFinite(preisNow)&&preisNow>0?`${preisNow.toFixed(2)} €`:"–";
+  const z=m.zert?`<br><b>Zertifikat:</b> ${m.zert}`:"";
+  const s=m.sack?`<br><b>Sackware:</b> ${m.sack}`:"";
+  return `<b>${m.firma}</b><br>${m.ort}<br>${preisTxt}${z}${s}`;
+}
+
+async function ladeDaten(){
+  const pF=new Promise(res=>Papa.parse(sheetUrlFirmen,{download:true,header:true,complete:r=>{try{res(normalizePreise(parseFirmen(r.data||[])))}catch(e){res([])}}}));
+  const pK=new Promise(res=>Papa.parse(sheetUrlKunden,{download:true,header:true,complete:r=>{try{res(parseKunden(r.data||[]))}catch(e){res([])}}}));
+  [werke,kunden]=await Promise.all([pF,pK]);
+}
+
+async function buildMap(){
+  alleMarker=[]; const bounds=L.latLngBounds();
+
+  for(const w of werke){
+    const c=geoCache[w.ort]?.country_code?geoCache[w.ort]:await geocode(w.ort); if(!c) continue;
+    const farbe=sackAktiv()?w.farbeSack:w.farbeWerk;
+    const m=L.circleMarker([c.lat,c.lon],{radius:8,color:farbe,fillColor:farbe,fillOpacity:.85})
+      .bindTooltip("",{sticky:true})
+      .on("tooltipopen",()=>m.getTooltip().setContent(tooltipFirma({...w,country_code:c.country_code})))
+      .on("click",()=>pickPoint(w.firma,c));
+    alleMarker.push({type:"firma",marker:m,...w,country_code:c.country_code||""});
+    bounds.extend([c.lat,c.lon]);
+  }
+
+  for(const k of kunden){
+    const c=geoCache[k.ort]?.country_code?geoCache[k.ort]:await geocode(k.ort); if(!c) continue;
+    const isSackOnly=(k.sackware==="ja")&&(k.lose!=="ja"), isSonstige=(k.sonstige==="ja");
+    const type=isSonstige?"sonstige":isSackOnly?"sackkunde":"kunde";
+    const icon=isSonstige?iconOrange:isSackOnly?iconPurple:iconBlue;
+    const m=L.marker([c.lat,c.lon],{icon}).bindTooltip(`<b>${k.name}</b><br>${k.ort}`,{sticky:true})
+      .on("click",()=>pickPoint(k.name,c));
+    alleMarker.push({type,marker:m,...k,country_code:c.country_code||""});
+    bounds.extend([c.lat,c.lon]);
+  }
+
+  if(bounds.isValid()) map.fitBounds(bounds.pad(.15));
+  updateLayers();
+}
+
+function updateLayers(){
+  if(routeLine){map.removeLayer(routeLine);routeLine=null} map.closePopup(); selectedPoints=[];
+  if(searchMarker){map.removeLayer(searchMarker);searchMarker=null}
+
+  const selected=getSelectedCountries(), noCountry=(selected.length===1&&selected[0]==="all");
+  const en=chkEnPlus.checked, din=chkDINplus.checked, sure=chkSURE.checked, cpp=chkCPP.checked, ohne=chkOhneZert.checked;
+  const gr=chkGruen.checked, or=chkOrange.checked, ro=chkRot.checked, ga=chkGrau.checked;
+  const showK=chkKunden.checked, showSK=chkSackKunden.checked, showS=chkSonstigeKunden.checked;
+
+  const wantF=chkSackFireflies.checked, want15=chkSack15kg.checked, useSack=(wantF||want15);
+
+  for(const m of alleMarker){
+    if(map.hasLayer(m.marker)) map.removeLayer(m.marker);
+
+    if(!noCountry && (!m.country_code || !selected.includes(m.country_code))) continue;
+
+    if(m.type==="kunde"){ if(showK) map.addLayer(m.marker); continue; }
+    if(m.type==="sackkunde"){ if(showSK) map.addLayer(m.marker); continue; }
+    if(m.type==="sonstige"){ if(showS) map.addLayer(m.marker); continue; }
+
+    if(useSack){
+      const s=lc(m.sack).replace(/\s+/g," ");
+      const hasF=s.includes("fireflies"), has15=s.includes("15 kg")||s.includes("15kg");
+      if(wantF&&!want15&&!hasF) continue;
+      if(want15&&!wantF&&!has15) continue;
+      if(wantF&&want15&&!(hasF||has15)) continue;
+    }
+
+    const z=lc(m.zert);
+    let zertOK=false;
+    if(z.includes("enplus")&&en) zertOK=true;
+    if(z.includes("dinplus")&&din) zertOK=true;
+    if(z.includes("sure")&&sure) zertOK=true;
+    if(z.includes("cpp")&&cpp) zertOK=true;
+    if(!z&&ohne) zertOK=true;
+    if(!zertOK) continue;
+
+    const farbe=useSack?m.farbeSack:m.farbeWerk;
+    const ok=(farbe==="green"&&gr)||(farbe==="orange"&&or)||(farbe==="red"&&ro)||(farbe==="#9e9e9e"&&ga);
+    if(!ok) continue;
+
+    m.marker.setStyle?.({color:farbe,fillColor:farbe});
+    map.addLayer(m.marker);
+  }
+}
+
+function pickPoint(label,coord){
+  selectedPoints.push({label,coord});
+  if(selectedPoints.length===2){const [a,b]=selectedPoints; selectedPoints=[]; showRoute(a,b);}
+}
+
+function luftlinieKm(a,b){
+  const R=6371,toRad=x=>x*Math.PI/180, dLat=toRad(b.lat-a.lat), dLon=toRad(b.lon-a.lon), la1=toRad(a.lat), la2=toRad(b.lat);
+  const h=Math.sin(dLat/2)**2+Math.cos(la1)*Math.cos(la2)*Math.sin(dLon/2)**2;
+  return 2*R*Math.atan2(Math.sqrt(h),Math.sqrt(1-h));
+}
+
+async function showRoute(a,b){
+  const osrm=`https://router.project-osrm.org/route/v1/driving/${a.coord.lon},${a.coord.lat};${b.coord.lon},${b.coord.lat}?overview=full&geometries=geojson`;
+  let distKm=null, coords=null, dashed=false, durStr="";
+  try{
+    const res=await fetch(osrm);
+    const data=res.ok?await res.json():null;
+    if(data?.routes?.length){
+      const r=data.routes[0];
+      distKm=r.distance/1000;
+      const min=r.duration/60, h=Math.floor(min/60), m=Math.round(min%60);
+      durStr=h?`${h}h ${m}min`:`${m}min`;
+      coords=r.geometry.coordinates.map(c=>[c[1],c[0]]);
+    }
+  }catch(e){}
+  if(!distKm){
+    distKm=luftlinieKm(a.coord,b.coord);
+    coords=[[a.coord.lat,a.coord.lon],[b.coord.lat,b.coord.lon]];
+    dashed=true;
+  }
+
+  const useSack=sackAktiv();
+  const firm=werke.find(w=>w.firma===a.label||w.firma===b.label);
+  const firmenPreis=firm?(useSack?firm.preisSack:firm.preis):0;
+
+  const preisProKm=distKm<250?2.15:1.85;
+  const berechnung=(distKm/24)*preisProKm;
+  const gesamt=((berechnung+(firmenPreis||0))*1.05).toFixed(2);
+
+  if(routeLine) map.removeLayer(routeLine);
+  routeLine=L.polyline(coords,{color:"blue",weight:5,opacity:.85,dashArray:dashed?"8 8":null}).addTo(map);
+  const mid=coords[Math.floor(coords.length/2)];
+  L.popup().setLatLng(mid).setContent(`
+    <b>Route:</b> ${a.label} ↔ ${b.label}<br>
+    <b>Entfernung:</b> ${distKm.toFixed(1)} km ${dashed?"(Luftlinie)":"(Straße)"}<br>
+    ${durStr?`<b>Dauer:</b> ${durStr}<br>`:""}
+    <b>Preis pro km:</b> ${preisProKm.toFixed(2)} €<br>
+    <b>${useSack?"Sackware-Preis":"Werkspreis"}:</b> ${(firmenPreis||0).toFixed(2)} €<br>
+    <b>Gesamtkosten:</b> <span style="color:green;font-size:1.1em">${gesamt} €</span>
+    ${dashed?`<br><small>Keine Straßenroute verfügbar → Luftlinie gestrichelt.</small>`:""}
+  `).openOn(map);
+  map.fitBounds(routeLine.getBounds(),{padding:[40,40]});
+}
+
+map.on("click",e=>{
+  const t=e.originalEvent?.target;
+  if(t?.closest?.(".leaflet-marker-icon,.leaflet-popup,.leaflet-interactive")) return;
+  if(routeLine){map.removeLayer(routeLine);routeLine=null}
+  selectedPoints=[]; map.closePopup();
+});
+
+document.addEventListener("change",e=>{
+  if(e.target?.matches('input[type="checkbox"]')){
+    if(e.target.classList.contains("countryChk")){
+      if(e.target.value==="all"&&e.target.checked) [...document.querySelectorAll(".countryChk")].forEach(x=>x.value!=="all"&&(x.checked=false));
+      if(e.target.value!=="all"&&e.target.checked) document.querySelector('.countryChk[value="all"]').checked=false;
+      updateCountryButtonLabel();
+    }
+    updateLayers();
+  }
+});
+
+countryDropdownBtn.addEventListener("click",()=>countryDropdownMenu.style.display=(countryDropdownMenu.style.display==="block"?"none":"block"));
+document.addEventListener("click",e=>{if(!countryDropdown.contains(e.target)) countryDropdownMenu.style.display="none"});
+
+searchInput.addEventListener("keydown",async e=>{
+  if(e.key!=="Enter") return;
+  const raw=e.target.value.trim(); if(!raw) return;
+
+  if(routeLine){map.removeLayer(routeLine);routeLine=null} selectedPoints=[]; map.closePopup();
+  if(searchMarker){map.removeLayer(searchMarker);searchMarker=null}
+
+  const q=lc(raw);
+  const matches=alleMarker.filter(m=>{
+    const name=lc(m.firma||m.name), ort=lc(m.ort), tip=lc(m.marker.getTooltip?.()?.getContent?.()||"");
+    return name.includes(q)||ort.includes(q)||tip.includes(q);
+  });
+
+  const bounds=L.latLngBounds();
+  matches.forEach((m,i)=>{ if(!map.hasLayer(m.marker)) map.addLayer(m.marker); bounds.extend(m.marker.getLatLng()); if(i===0) m.marker.openTooltip?.(); });
+
+  const geo=await geocode(raw);
+  if(geo){
+    const ll=[geo.lat,geo.lon];
+    searchMarker=L.circleMarker(ll,{radius:8,color:"blue",fillColor:"blue",fillOpacity:.5}).addTo(map);
+    searchMarker.bindPopup(`<b>${raw}</b>${geo.country?`<br>${geo.country}`:""}<br><small>Jetzt Werk/Händler anklicken, um Route zu berechnen.</small>`).openPopup();
+    bounds.extend(ll);
+    selectedPoints.push({label:raw,coord:{lat:geo.lat,lon:geo.lon}});
+    searchMarker.on("click",()=>selectedPoints=[{label:raw,coord:{lat:geo.lat,lon:geo.lon}}]);
+  }
+
+  if(bounds.isValid()) map.fitBounds(bounds.pad(.2));
+  else alert("Kein Treffer gefunden.");
+});
+
+(async()=>{
+  if(!sheetUrlFirmen||!sheetUrlKunden){console.warn("CSV Links fehlen: sheetUrlFirmen / sheetUrlKunden setzen!"); return;}
+  await ladeDaten(); await buildMap();
+})();
+</script></body></html>
