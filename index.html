@@ -229,6 +229,7 @@ function normalizePreise(d){
     x.keinPreisWerk = !(isFinite(x._preisOrig) && x._preisOrig>0);
     x.keinPreisSack = !(isFinite(x._preisSackOrig) && x._preisSackOrig>0);
 
+    // Für die Darstellung auf der Karte darf er weiterhin Durchschnitt setzen:
     if(x.keinPreisWerk) x.preis = avgW;
     if(x.keinPreisSack) x.preisSack = avgS;
 
@@ -352,6 +353,8 @@ async function showRouteByCoords(aLabel,aCoord,bLabel,bCoord){
 
   const useSack = sackAktiv();
   const firm = werke.find(w=>w.firma===aLabel || w.firma===bLabel);
+
+  // Für Route-Popup: weiterhin die "aktiven" Preise verwenden (wie bisher)
   const base = firm ? (useSack ? firm.preisSack : firm.preis) : 0;
 
   const {total, preisProKm} = calcDeliveredPrice(distKm, base);
@@ -435,10 +438,26 @@ async function runTargetSearch(type, targetPrice){
   const resBox = ctxEl.querySelector("#ctxResults");
   resBox.innerHTML = `<div class="small">Suche…</div>`;
 
+  // ✅ WICHTIGER FIX:
+  // Im Zielpreis-Tool werden NUR Firmen berücksichtigt, die einen ECHTEN Preis in der Tabelle haben
+  // (also NICHT der automatisch gesetzte Durchschnittspreis aus normalizePreise()).
   const firmsVisible = alleMarker
     .filter(m => m.type==="firma" && map.hasLayer(m.marker))
-    .map(m => ({...m, base: (type==="sack" ? m.preisSack : m.preis)}))
-    .filter(m => isFinite(m.base) && m.base>0);
+    .map(m => {
+      const isSack = (type === "sack");
+      const hasReal = isSack ? !m.keinPreisSack : !m.keinPreisWerk;
+
+      // nur Originalpreise (nicht die evtl. auf Durchschnitt gesetzten)
+      const base = isSack ? m._preisSackOrig : m._preisOrig;
+
+      return { ...m, base, hasReal };
+    })
+    .filter(m => m.hasReal && isFinite(m.base) && m.base>0);
+
+  if(!firmsVisible.length){
+    resBox.innerHTML = `<div class="small">Keine passenden Firmen mit <b>echtem</b> ${type==="sack"?"Sackware-Preis":"Werkspreis"} gefunden (Filter/Layer beachten).</div>`;
+    return;
+  }
 
   const c = ctxCustomer.coord;
   const pre = firmsVisible.map(f=>{
@@ -461,7 +480,7 @@ async function runTargetSearch(type, targetPrice){
   matches.sort((a,b)=>a.total-b.total);
 
   if(!matches.length){
-    resBox.innerHTML = `<div class="small">Keine Firma unter ${targetPrice.toFixed(2)} € gefunden (in den nächsten ${LIMIT} nach Nähe).</div>`;
+    resBox.innerHTML = `<div class="small">Keine Firma unter ${targetPrice.toFixed(2)} € gefunden (in den nächsten ${LIMIT} nach Nähe, nur mit echten Preisen).</div>`;
     return;
   }
 
@@ -480,7 +499,7 @@ async function runTargetSearch(type, targetPrice){
       <div><b>${m.f.firma}</b><span class="pill">${type==="sack"?"Sackware":"Lose"}</span></div>
       <div class="small">${m.f.ort}</div>
       <div class="small"><b>Entfernung:</b> ${m.distKm.toFixed(1)} km</div>
-      <div class="small"><b>Werkpreis:</b> ${m.f.base.toFixed(2)} €</div>
+      <div class="small"><b>${type==="sack" ? "Sackware-Preis" : "Werkspreis"}:</b> ${m.f.base.toFixed(2)} €</div>
       <div><b>Lieferpreis:</b> ${m.total.toFixed(2)} €</div>
     </div>
   `).join("");
@@ -499,6 +518,7 @@ async function runTargetSearch(type, targetPrice){
     });
   });
 }
+
 function clearRoute(){
   if(routeLine){ map.removeLayer(routeLine); routeLine = null; }
   map.closePopup();
@@ -512,16 +532,14 @@ map.on("click", (e)=>{
 
   // Wenn du auf die Route klickst, soll sie bleiben -> dann NICHT löschen
   if(routeLine){
-    // Leaflet setzt originalEvent.target auf SVG/Canvas der Linie
     const t = e.originalEvent?.target;
-    // grober Check: wenn auf den Pfad geklickt wurde (Polyline ist SVG path)
     if(t && (t.tagName === "path" || t.closest?.("path"))) return;
   }
 
   clearRoute();
 });
 
-// ESC-Taste -> Route weg (optional, aber mega praktisch)
+// ESC-Taste -> Route weg
 document.addEventListener("keydown", (e)=>{
   if(e.key === "Escape") clearRoute();
 });
