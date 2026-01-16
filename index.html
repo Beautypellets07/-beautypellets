@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Pelletwerke – Europa Preiskarte</title>
+<title>Europa Preiskarte – Pellets / Streusalz</title>
 
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -36,29 +36,14 @@ html,body{height:100%;margin:0}#map{height:100%;width:100%}
 }
 .ctxbox b{display:block;margin-bottom:6px}
 .ctxbox .row{display:flex; gap:8px; margin:8px 0}
-.ctxbox select,.ctxbox input{
-  width:100%; padding:7px 8px; border:1px solid #ccc; border-radius:6px;
-  outline:none; box-sizing:border-box;
-}
-.ctxbox .results{
-  margin-top:8px; max-height:240px; overflow:auto;
-  border-top:1px solid #eee; padding-top:8px;
-}
-.ctxbox .item{
-  padding:8px; border:1px solid #eee; border-radius:8px; cursor:pointer;
-  margin:6px 0;
-}
+.ctxbox select,.ctxbox input{width:100%; padding:7px 8px; border:1px solid #ccc; border-radius:6px; outline:none; box-sizing:border-box;}
+.ctxbox .results{margin-top:8px; max-height:240px; overflow:auto; border-top:1px solid #eee; padding-top:8px;}
+.ctxbox .item{padding:8px; border:1px solid #eee; border-radius:8px; cursor:pointer; margin:6px 0;}
 .ctxbox .item:hover{background:#fafafa}
 .ctxbox .small{font-size:12px;opacity:.75}
-.ctxbox .pill{
-  display:inline-block; padding:2px 6px; border-radius:999px;
-  background:#f2f2f2; font-size:12px; margin-left:6px;
-}
+.ctxbox .pill{display:inline-block; padding:2px 6px; border-radius:999px; background:#f2f2f2; font-size:12px; margin-left:6px;}
 .ctxbox .topbar{display:flex;justify-content:space-between;align-items:center;gap:8px}
-.ctxbox .xbtn{
-  border:1px solid #ddd;background:#fff;border-radius:8px;cursor:pointer;
-  padding:2px 8px; line-height:1.6;
-}
+.ctxbox .xbtn{border:1px solid #ddd;background:#fff;border-radius:8px;cursor:pointer;padding:2px 8px; line-height:1.6;}
 .hidden{display:none!important}
 </style>
 </head>
@@ -66,7 +51,7 @@ html,body{height:100%;margin:0}#map{height:100%;width:100%}
 <body>
 <div id="map"></div>
 
-<!-- ✅ Unit ist UNTER Land/Länder -->
+<!-- ✅ Unit ist unter Land/Länder -->
 <div class="box search">
   <div>🔍 <input id="searchInput" placeholder="Firma, Kunde oder Ort suchen…"></div>
 
@@ -135,19 +120,22 @@ html,body{height:100%;margin:0}#map{height:100%;width:100%}
 </div>
 
 <script>
-/*** ====== SHEETS ====== ***/
+/*** ====== SHEETS (DEINE IDS) ====== ***/
 const sheetIdFirmen = "1fNUc0LJqBXxJdW1JRDfYxYORMuqeks_bHqp7zUq5Zmk";
 const sheetIdKunden = "1fK_rO1b2eI4sOvUKOufVgmd2lQ85KazPf5Kfm4Iia5I";
 
-// Pellets: gid=0
-const sheetUrlFirmenPellets = `https://docs.google.com/spreadsheets/d/${sheetIdFirmen}/export?format=csv&gid=0`;
-
-// ✅ STREUSALZ: Tab heißt auf deinem Bild "streusalz" (klein)
+/* Firmen:
+   - Pellets: gid=0
+   - Streusalz: Sheet-Tab "streusalz" (klein) */
 const STREUSALZ_SHEET_NAME = "streusalz";
-const sheetUrlFirmenStreusalz =
-  `https://docs.google.com/spreadsheets/d/${sheetIdFirmen}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(STREUSALZ_SHEET_NAME)}`;
+const sheetUrlFirmenPellets = `https://docs.google.com/spreadsheets/d/${sheetIdFirmen}/export?format=csv&gid=0`;
+const sheetUrlFirmenStreusalz = `https://docs.google.com/spreadsheets/d/${sheetIdFirmen}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(STREUSALZ_SHEET_NAME)}`;
 
-const sheetUrlKunden = `https://docs.google.com/spreadsheets/d/${sheetIdKunden}/export?format=csv&gid=0`;
+/* Kunden:
+   - Pellets: gid=0
+   - Streusalz: Sheet-Tab "streusalz" (klein) */
+const sheetUrlKundenPellets = `https://docs.google.com/spreadsheets/d/${sheetIdKunden}/export?format=csv&gid=0`;
+const sheetUrlKundenStreusalz = `https://docs.google.com/spreadsheets/d/${sheetIdKunden}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(STREUSALZ_SHEET_NAME)}`;
 
 /*** ====== MAP ====== ***/
 const map=L.map("map").setView([51,11],5);
@@ -194,7 +182,6 @@ const str=v=>String(v??"").trim();
 
 function isPellets(){ return currentUnit==="pellets"; }
 function sackAktiv(){ return isPellets() && (chkSackFireflies.checked || chkSack15kg.checked); }
-
 function colorForPrice(p,kein){
   if(kein||!isFinite(p)||p<=0) return "#9e9e9e";
   if(p<=260) return "green";
@@ -217,23 +204,16 @@ const tri=(fill)=>L.divIcon({
 });
 const iconBlue=tri("blue"), iconPurple=tri("purple"), iconOrange=tri("orange");
 
-/*** ====== DATA ====== ***/
-let kunden=[];
-let werkePellets=null;
-let werkeStreusalz=null;
-let werke=[];
+/*** ====== DATA CACHES ====== ***/
+let werkePellets=null, werkeStreusalz=null, werke=[];
+let kundenPellets=null, kundenStreusalz=null, kunden=[];
 
 let alleMarker=[], selectedPoints=[], routeLine=null, searchMarker=null;
 let ctxEl=null, ctxCustomer=null, matchMarkers=[];
 
+/*** ====== UI helpers ====== ***/
 function closeCtx(){ if(ctxEl){ctxEl.remove(); ctxEl=null;} ctxCustomer=null; }
-function resetMatchHighlights(){
-  for(const m of matchMarkers){
-    try{ if(m.marker.setStyle && m._origStyle) m.marker.setStyle(m._origStyle); }catch(e){}
-  }
-  matchMarkers=[];
-}
-
+function resetMatchHighlights(){ for(const m of matchMarkers){ try{ if(m.marker.setStyle && m._origStyle) m.marker.setStyle(m._origStyle);}catch(e){} } matchMarkers=[]; }
 function stopEvt(el){
   if(!el) return;
   L.DomEvent.disableClickPropagation(el);
@@ -246,7 +226,7 @@ function stopEvt(el){
   el.addEventListener("touchstart", e=>e.stopPropagation(), {passive:true});
 }
 
-/* ===== PARSER ===== */
+/*** ====== PARSER ====== ***/
 function findIndex(headers, cands){
   const hs=headers.map(h=>lc(h));
   const cs=cands.map(c=>lc(c));
@@ -262,7 +242,7 @@ function parseFirmenArray(table){
   let ortIdx  = findIndex(headers, ["ort","stadt","standort","adresse","location"]); if(ortIdx<0) ortIdx = 1;
 
   const preisIdx = 2; // Spalte C
-  let sackIdx = findIndex(headers, ["sackwarenpreis","sackwarenpreis ","sackwarepreis","preis_sack","sackpreis","preis sack"]);
+  let sackIdx = findIndex(headers, ["sackwarenpreis","sackwarepreis","preis_sack","sackpreis","preis sack"]);
   if(sackIdx<0) sackIdx = 3;
 
   let zertIdx = findIndex(headers, ["zertifikat","zertifikate","zert","cert"]); if(zertIdx<0) zertIdx = -1;
@@ -293,7 +273,13 @@ function parseKunden(rows){
     loseKey=(keys.find(k=>lc(k)==="lose")||"lose"),
     sackKey=(keys.find(k=>lc(k)==="sackware")||"sackware"),
     sonstKey=(keys.find(k=>lc(k)==="sonstige")||"sonstige");
-  return rows.map(x=>({name:str(x[nameKey]),ort:str(x[ortKey]),lose:lc(x[loseKey]),sackware:lc(x[sackKey]),sonstige:lc(x[sonstKey])})).filter(x=>x.name&&x.ort);
+  return rows.map(x=>({
+    name:str(x[nameKey]),
+    ort:str(x[ortKey]),
+    lose:lc(x[loseKey]),
+    sackware:lc(x[sackKey]),
+    sonstige:lc(x[sonstKey])
+  })).filter(x=>x.name&&x.ort);
 }
 
 function normalizePreise(d){
@@ -305,23 +291,17 @@ function normalizePreise(d){
   return d.map(x=>{
     x.keinPreisWerk = !(isFinite(x._preisOrig) && x._preisOrig>0);
     x.keinPreisSack = !(isFinite(x._preisSackOrig) && x._preisSackOrig>0);
+
     if(x.keinPreisWerk) x.preis = avgW;
     if(x.keinPreisSack) x.preisSack = avgS;
+
     x.farbeWerk = colorForPrice(x._preisOrig, x.keinPreisWerk);
     x.farbeSack = colorForPrice(x._preisSackOrig, x.keinPreisSack);
     return x;
   });
 }
 
-/* ===== LOADERS ===== */
-async function loadKundenOnce(){
-  if(kunden.length) return;
-  kunden = await new Promise(res=>Papa.parse(sheetUrlKunden,{
-    download:true, header:true,
-    complete:r=>{ try{ res(parseKunden(r.data||[])) }catch(e){ res([]) } }
-  }));
-}
-
+/*** ====== LOADERS ====== ***/
 async function loadWerkeForUnit(unit){
   if(unit==="pellets" && werkePellets) return werkePellets;
   if(unit==="streusalz" && werkeStreusalz) return werkeStreusalz;
@@ -339,7 +319,24 @@ async function loadWerkeForUnit(unit){
   return data;
 }
 
-/* ===== COUNTRY ===== */
+async function loadKundenForUnit(unit){
+  if(unit==="pellets" && kundenPellets) return kundenPellets;
+  if(unit==="streusalz" && kundenStreusalz) return kundenStreusalz;
+
+  const url = (unit==="pellets") ? sheetUrlKundenPellets : sheetUrlKundenStreusalz;
+
+  const data = await new Promise(res=>Papa.parse(url,{
+    download:true, header:true,
+    complete:r=>{ try{ res(parseKunden(r.data||[])) }catch(e){ res([]) } }
+  }));
+
+  if(unit==="pellets") kundenPellets = data;
+  else kundenStreusalz = data;
+
+  return data;
+}
+
+/*** ====== COUNTRY ====== ***/
 function getSelectedCountries(){
   const s=[...document.querySelectorAll(".countryChk")].filter(c=>c.checked).map(c=>c.value);
   return (!s.length||s.includes("all"))?["all"]:s;
@@ -351,7 +348,7 @@ function updateCountryButtonLabel(){
   countryDropdownBtn.textContent=s.map(c=>names[c]||c.toUpperCase()).join(", ");
 }
 
-/* ===== TOOLTIP ===== */
+/*** ====== TOOLTIP ====== ***/
 function tooltipFirma(m){
   const useSack = sackAktiv();
   const p = (isPellets() && useSack)
@@ -364,10 +361,11 @@ function tooltipFirma(m){
   return `<b>${m.firma}</b><br>${m.ort}<br>${preisTxt}${z}${s}`;
 }
 
-/* ===== BUILD MAP ===== */
+/*** ====== BUILD MAP ====== ***/
 async function buildMap(){
   for(const m of alleMarker){ try{ map.removeLayer(m.marker); }catch(e){} }
   alleMarker=[];
+  if(searchMarker){ try{ map.removeLayer(searchMarker); }catch(e){} searchMarker=null; }
 
   const bounds=L.latLngBounds();
 
@@ -406,7 +404,7 @@ async function buildMap(){
   updateLayers();
 }
 
-/* ===== ROUTE / PRICE ===== */
+/*** ===== ROUTE / PRICE ===== */
 function luftlinieKm(a,b){
   const R=6371,toRad=x=>x*Math.PI/180, dLat=toRad(b.lat-a.lat), dLon=toRad(b.lon-a.lon), la1=toRad(a.lat), la2=toRad(b.lat);
   const h=Math.sin(dLat/2)**2+Math.cos(la1)*Math.cos(la2)*Math.sin(dLon/2)**2;
@@ -467,7 +465,7 @@ async function showRouteByCoords(aLabel,aCoord,bLabel,bCoord){
 }
 function showRoute(a,b){ return showRouteByCoords(a.label, a.coord, b.label, b.coord); }
 
-/* ===== CONTEXT MENU ===== */
+/*** ===== CONTEXT MENU (Zielpreis) ===== */
 function openCustomerMenu(kunde, coord, mouseEvent){
   closeCtx();
   resetMatchHighlights();
@@ -589,7 +587,7 @@ async function runTargetSearch(type, targetPrice){
   `).join("");
 }
 
-/* ===== LAYERS / FILTER ===== */
+/*** ===== LAYERS ===== */
 function updateLayers(){
   if(routeLine){map.removeLayer(routeLine);routeLine=null}
   map.closePopup(); selectedPoints=[];
@@ -642,7 +640,7 @@ function updateLayers(){
   }
 }
 
-/* ===== PICK / CLEAR ===== */
+/*** ===== PICK / CLEAR ===== */
 function pickPoint(label,coord){
   selectedPoints.push({label,coord});
   if(selectedPoints.length===2){const [a,b]=selectedPoints; selectedPoints=[]; showRoute(a,b);}
@@ -653,7 +651,7 @@ function clearRoute(){
   selectedPoints = [];
 }
 
-/* ===== UNIT SWITCH ===== */
+/*** ===== UNIT UI ===== */
 function applyUnitUIOnly(){
   if(isPellets()){
     certTitle.textContent = "Zertifikate & Sackware";
@@ -665,22 +663,25 @@ function applyUnitUIOnly(){
     kundenFilterSection.classList.add("hidden");
     chkSackFireflies.checked = false;
     chkSack15kg.checked = false;
-    chkKunden.checked = true; chkSackKunden.checked = true; chkSonstigeKunden.checked = true;
   }
 }
 
+/*** ===== UNIT SWITCH ===== */
 async function switchUnit(newUnit){
   currentUnit = newUnit;
   applyUnitUIOnly();
   closeCtx();
   clearRoute();
+
   werke = await loadWerkeForUnit(currentUnit);
+  kunden = await loadKundenForUnit(currentUnit);
+
   await buildMap();
 }
 
 unitSelect.addEventListener("change", async ()=>{ await switchUnit(unitSelect.value); });
 
-/* ===== EVENTS ===== */
+/*** ===== EVENTS ===== */
 map.on("click", (e)=>{
   if(ctxEl) return;
   if(routeLine){
@@ -713,14 +714,14 @@ document.addEventListener("change",e=>{
 countryDropdownBtn.addEventListener("click",()=>countryDropdownMenu.style.display=(countryDropdownMenu.style.display==="block"?"none":"block"));
 document.addEventListener("click",e=>{if(!countryDropdown.contains(e.target)) countryDropdownMenu.style.display="none"});
 
-/* ===== SEARCH ===== */
+/*** ===== SEARCH ===== */
 searchInput.addEventListener("keydown",async e=>{
   if(e.key!=="Enter") return;
   const raw=e.target.value.trim(); if(!raw) return;
 
   closeCtx();
   clearRoute();
-  if(searchMarker){map.removeLayer(searchMarker);searchMarker=null}
+  if(searchMarker){ try{ map.removeLayer(searchMarker); }catch(err){} searchMarker=null; }
 
   const q=lc(raw);
   const matches=alleMarker.filter(m=>{
@@ -755,9 +756,8 @@ searchInput.addEventListener("keydown",async e=>{
   else alert("Kein Treffer gefunden.");
 });
 
-/* ===== INIT ===== */
+/*** ===== INIT ===== */
 (async()=>{
-  await loadKundenOnce();
   updateCountryButtonLabel();
   await switchUnit(unitSelect.value); // startet mit Pellets
 })();
