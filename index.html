@@ -51,19 +51,33 @@ html,body{height:100%;margin:0}#map{height:100%;width:100%}
 .debugbox{
   position:absolute;left:12px;top:12px;z-index:9999;
   background:#111;color:#fff;font:12px/1.3 system-ui,Arial;
-  padding:8px 10px;border-radius:10px;max-width:420px;
+  padding:8px 10px;border-radius:10px;max-width:520px;
   box-shadow:0 10px 24px rgba(0,0,0,.25);
   opacity:.92
 }
 .debugbox b{display:block;margin-bottom:4px}
 .debugbox .ok{color:#76ff7a}
 .debugbox .bad{color:#ff6b6b}
+.debugbox .btn{
+  display:inline-block;margin-top:6px;
+  border:1px solid #333;background:#1c1c1c;color:#fff;
+  border-radius:10px;padding:6px 10px;cursor:pointer;
+}
+.debugbox textarea{
+  width:100%; height:110px; margin-top:6px;
+  background:#0f0f0f; color:#fff; border:1px solid #333;
+  border-radius:10px; padding:8px; box-sizing:border-box;
+  font:12px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
 </style>
 </head>
 
 <body>
 <div id="map"></div>
-<div class="debugbox" id="dbg"><b>Debug</b><div>Start…</div></div>
+<div class="debugbox" id="dbg">
+  <b>Debug</b>
+  <div>Start…</div>
+</div>
 
 <!-- Suche + Länder + Unit -->
 <div class="box search">
@@ -140,15 +154,25 @@ html,body{height:100%;margin:0}#map{height:100%;width:100%}
 </div>
 
 <script>
+/*** =========================
+ *  GEOCACHE.JSON MODE (B)
+ *  =========================
+ *  - Keine Live-Geocoding Requests mehr
+ *  - Koordinaten kommen aus geocache.json (und localStorage Cache)
+ *  - Fehlende Orte werden gelistet, damit du sie einmalig ergänzt
+ ***/
+const GEOCACHE_URL = "./geocache.json"; // <-- gleiche Ordner wie HTML
+const LOCAL_CACHE_KEY = "geoCachePellets_EU_JSON_v1";
+const ENABLE_FALLBACK_GEOCODE = false;  // <- absichtlich AUS (damit nie wieder Limits)
+const FALLBACK_GEOCODE_DELAY_MS = 1100; // nur relevant wenn du oben true setzt
+
 /*** ====== SHEETS (DEINE IDS) ====== ***/
 const sheetIdFirmen = "1fNUc0LJqBXxJdW1JRDfYxYORMuqeks_bHqp7zUq5Zmk";
 const sheetIdKunden = "1fK_rO1b2eI4sOvUKOufVgmd2lQ85KazPf5Kfm4Iia5I";
-
 const STREUSALZ_SHEET_NAME = "streusalz";
 
 const sheetUrlFirmenPellets   = `https://docs.google.com/spreadsheets/d/${sheetIdFirmen}/gviz/tq?tqx=out:csv&gid=0`;
 const sheetUrlKundenPellets   = `https://docs.google.com/spreadsheets/d/${sheetIdKunden}/gviz/tq?tqx=out:csv&gid=0`;
-
 const sheetUrlFirmenStreusalz = `https://docs.google.com/spreadsheets/d/${sheetIdFirmen}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(STREUSALZ_SHEET_NAME)}`;
 const sheetUrlKundenStreusalz = `https://docs.google.com/spreadsheets/d/${sheetIdKunden}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(STREUSALZ_SHEET_NAME)}`;
 
@@ -206,25 +230,12 @@ const str=v=>String(v??"").trim();
 
 function isPellets(){ return currentUnit==="pellets"; }
 function sackAktiv(){ return isPellets() && (chkSackFireflies.checked || chkSack15kg.checked); }
+
 function colorForPrice(p,kein){
   if(kein||!isFinite(p)||p<=0) return "#9e9e9e";
   if(p<=260) return "green";
   if(p<285) return "orange";
   return "red";
-}
-
-/*** ✅ Geocode (nur noch Fallback, sicher abgefangen) ***/
-async function geocodeSafe(q){
-  try{
-    const r=await fetch(`https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&q=${encodeURIComponent(q)}&limit=1&accept-language=de`);
-    const d=await r.json();
-    if(!d.length) return null;
-    const a=d[0].address||{};
-    return {lat:+d[0].lat, lon:+d[0].lon, country:a.country||"", country_code:(a.country_code||"").toLowerCase()};
-  }catch(e){
-    // wichtig: NICHT crashen – einfach null zurück
-    return null;
-  }
 }
 
 const tri=(fill)=>L.divIcon({
@@ -234,11 +245,93 @@ const tri=(fill)=>L.divIcon({
 });
 const iconBlue=tri("blue"), iconPurple=tri("purple"), iconOrange=tri("orange");
 
+/*** ====== GEO CACHE (JSON + LocalStorage) ====== ***/
+let geoCache = {}; // key -> {lat, lon, country_code?}
+try{
+  geoCache = JSON.parse(localStorage.getItem(LOCAL_CACHE_KEY) || "{}");
+}catch(e){ geoCache = {}; }
+
+let geoJson = {};       // from geocache.json
+let geoJsonLoaded = false;
+
+function saveLocalGeoCache(){
+  try{ localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(geoCache)); }catch(e){}
+}
+
+function normKey(s){
+  // aggressive normalize so "Bahnhofstraße" and "Bahnhofstrasse" match
+  return lc(s)
+    .replace(/[„“”"]/g,"")
+    .replace(/\s+/g," ")
+    .replace(/ß/g,"ss")
+    .replace(/[’'`]/g,"")
+    .replace(/[.,]/g,"")
+    .trim();
+}
+
+// Resolves coords for an address string via:
+// 1) localStorage cache
+// 2) geocache.json
+// 3) (optional) fallback geocode (disabled by default)
+async function getCoordForAddress(address){
+  const raw = str(address);
+  if(!raw) return null;
+
+  const key = normKey(raw);
+
+  if(geoCache[key]?.lat && geoCache[key]?.lon) return geoCache[key];
+  if(geoJsonLoaded && geoJson[key]?.lat && geoJson[key]?.lon) {
+    // also store locally for even faster next time
+    geoCache[key] = geoJson[key];
+    saveLocalGeoCache();
+    return geoJson[key];
+  }
+
+  if(!ENABLE_FALLBACK_GEOCODE) return null;
+
+  // Optional fallback (if you ever enable it)
+  await new Promise(r=>setTimeout(r, FALLBACK_GEOCODE_DELAY_MS));
+  const g = await geocodeSafe(raw);
+  if(!g) return null;
+  geoCache[key] = {lat:g.lat, lon:g.lon, country_code:g.country_code||""};
+  saveLocalGeoCache();
+  return geoCache[key];
+}
+
+/*** ✅ (Optional) Nominatim fallback – stays safe (but OFF by default) ***/
+async function geocodeSafe(q){
+  try{
+    const r=await fetch(`https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&q=${encodeURIComponent(q)}&limit=1&accept-language=de`);
+    const d=await r.json();
+    if(!d.length) return null;
+    const a=d[0].address||{};
+    return {lat:+d[0].lat, lon:+d[0].lon, country:a.country||"", country_code:(a.country_code||"").toLowerCase()};
+  }catch(e){
+    return null;
+  }
+}
+
+async function loadGeoJson(){
+  dbg("Lade geocache.json …");
+  try{
+    const res = await fetch(GEOCACHE_URL, {cache:"no-store"});
+    if(!res.ok) throw new Error("HTTP "+res.status);
+    const j = await res.json();
+    geoJson = j && typeof j === "object" ? j : {};
+    geoJsonLoaded = true;
+    dbg(`geocache.json OK: ${Object.keys(geoJson).length} Orte`, true);
+  }catch(e){
+    geoJsonLoaded = false;
+    geoJson = {};
+    dbg(`geocache.json FEHLT/ERROR (${e.message}). Marker brauchen Cache!`, false);
+    dbg(`Tipp: Lege eine Datei "geocache.json" neben die HTML.`, false);
+  }
+}
+
 /*** ====== DATA CACHES ====== ***/
 let werkePellets=null, werkeStreusalz=null, werke=[];
 let kundenPellets=null, kundenStreusalz=null, kunden=[];
 let alleMarker=[], selectedPoints=[], routeLine=null, searchMarker=null;
-let ctxEl=null, ctxCustomer=null;
 
 let buildToken=0;
 
@@ -249,7 +342,6 @@ function findIndex(headers, cands){
   return hs.findIndex(h=>cs.includes(h));
 }
 
-/* ✅ FIRMA: liest zusätzlich LAT/LON aus Spalte R/S (Index 17/18) */
 function parseFirmenArray(table){
   if(!table || table.length<2) return [];
   const headers=(table[0]||[]).map(x=>str(x));
@@ -265,12 +357,6 @@ function parseFirmenArray(table){
   let zertIdx = findIndex(headers, ["zertifikat","zertifikate","zert","cert"]); if(zertIdx<0) zertIdx = -1;
   let sackTxtIdx = findIndex(headers, ["sackware","sack","bag","bagged"]); if(sackTxtIdx<0) sackTxtIdx = -1;
 
-  // ✅ Lat/Lon
-  let latIdx = findIndex(headers, ["lat","latitude","breite"]);
-  let lonIdx = findIndex(headers, ["lon","lng","longitude","laenge"]);
-  if(latIdx<0) latIdx = 17; // R
-  if(lonIdx<0) lonIdx = 18; // S
-
   return rows
     .filter(r=>str(r[nameIdx]) && str(r[ortIdx]))
     .map(r=>{
@@ -283,36 +369,26 @@ function parseFirmenArray(table){
         preisSack: ps,
         zert: zertIdx>=0 ? str(r[zertIdx]) : "",
         sack: sackTxtIdx>=0 ? str(r[sackTxtIdx]) : "",
-        lat: num(r[latIdx]),
-        lon: num(r[lonIdx]),
         _preisOrig: p,
         _preisSackOrig: ps
       };
     });
 }
 
-/* ✅ KUNDEN: versucht lat/lon Keys; fallback optional */
 function parseKunden(rows){
   const keys=Object.keys(rows[0]||{});
-
   const nameKey=(keys.find(k=>["name","kunde","kundenname"].includes(lc(k)))||keys[0]);
   const ortKey=(keys.find(k=>["ort","adresse","standort","anschrift","stadt","location"].includes(lc(k)))||keys[1]);
-
   const loseKey=(keys.find(k=>lc(k)==="lose")||"lose");
   const sackKey=(keys.find(k=>lc(k)==="sackware")||"sackware");
   const sonstKey=(keys.find(k=>lc(k)==="sonstige")||"sonstige");
-
-  const latKey = keys.find(k=>["lat","latitude","breite"].includes(lc(k)));
-  const lonKey = keys.find(k=>["lon","lng","longitude","laenge"].includes(lc(k)));
 
   return rows.map(x=>({
     name:str(x[nameKey]),
     ort:str(x[ortKey]),
     lose:lc(x[loseKey]),
     sackware:lc(x[sackKey]),
-    sonstige:lc(x[sonstKey]),
-    lat: latKey ? num(x[latKey]) : NaN,
-    lon: lonKey ? num(x[lonKey]) : NaN,
+    sonstige:lc(x[sonstKey])
   })).filter(x=>x.name&&x.ort);
 }
 
@@ -325,10 +401,8 @@ function normalizePreise(d){
   return d.map(x=>{
     x.keinPreisWerk = !(isFinite(x._preisOrig) && x._preisOrig>0);
     x.keinPreisSack = !(isFinite(x._preisSackOrig) && x._preisSackOrig>0);
-
     if(x.keinPreisWerk) x.preis = avgW;
     if(x.keinPreisSack) x.preisSack = avgS;
-
     x.farbeWerk = colorForPrice(x._preisOrig, x.keinPreisWerk);
     x.farbeSack = colorForPrice(x._preisSackOrig, x.keinPreisSack);
     return x;
@@ -407,79 +481,7 @@ function tooltipFirma(m){
   return `<b>${m.firma}</b><br>${m.ort}<br>${preisTxt}${z}${s}`;
 }
 
-/*** ====== BUILD MAP ====== ***/
-async function buildMap(){
-  const myToken=++buildToken;
-
-  for(const m of alleMarker){ try{ map.removeLayer(m.marker);}catch(e){} }
-  alleMarker=[];
-
-  const bounds=L.latLngBounds();
-
-  // Firmen
-  for(const w of werke){
-    if(myToken!==buildToken) return;
-
-    // ✅ 1) Direkt lat/lon aus Sheet
-    let lat=w.lat, lon=w.lon;
-    // fallback (optional)
-    let country_code="";
-
-    if(!(isFinite(lat)&&isFinite(lon)&&lat!==0&&lon!==0)){
-      // ❌ Nur Fallback – kann limitiert werden
-      const g=await geocodeSafe(w.ort);
-      if(!g) continue;
-      lat=g.lat; lon=g.lon; country_code=g.country_code||"";
-    }
-
-    const farbe = (isPellets() && sackAktiv()) ? w.farbeSack : w.farbeWerk;
-    const cm=L.circleMarker([lat,lon],{radius:8,color:farbe,fillColor:farbe,fillOpacity:.85})
-      .bindTooltip("",{sticky:true})
-      .on("tooltipopen",()=>cm.getTooltip().setContent(tooltipFirma({...w,country_code})))
-      .on("click",()=>pickPoint(w.firma,{lat,lon}));
-
-    alleMarker.push({type:"firma",marker:cm,...w,country_code, _coord:{lat,lon}});
-    bounds.extend([lat,lon]);
-  }
-
-  // Kunden
-  for(const k of kunden){
-    if(myToken!==buildToken) return;
-
-    let lat=k.lat, lon=k.lon;
-    let country_code="";
-
-    // ✅ wenn Kunden keine Koordinaten haben, dann fallback (aber besser: im Sheet ergänzen!)
-    if(!(isFinite(lat)&&isFinite(lon)&&lat!==0&&lon!==0)){
-      const g=await geocodeSafe(k.ort);
-      if(!g) continue;
-      lat=g.lat; lon=g.lon; country_code=g.country_code||"";
-    }
-
-    let type="kunde", icon=iconBlue;
-    if(isPellets()){
-      const isSackOnly=(k.sackware==="ja")&&(k.lose!=="ja");
-      const isSonstige=(k.sonstige==="ja");
-      type=isSonstige?"sonstige":isSackOnly?"sackkunde":"kunde";
-      icon=isSonstige?iconOrange:isSackOnly?iconPurple:iconBlue;
-    }else{
-      type="streukunde";
-      icon=iconBlue;
-    }
-
-    const mk=L.marker([lat,lon],{icon})
-      .bindTooltip(`<b>${k.name}</b><br>${k.ort}<br><small>Rechtsklick: Zielpreis-Suche</small>`,{sticky:true})
-      .on("click",()=>pickPoint(k.name,{lat,lon}));
-
-    alleMarker.push({type,marker:mk,...k,country_code, _coord:{lat,lon}});
-    bounds.extend([lat,lon]);
-  }
-
-  if(bounds.isValid()) map.fitBounds(bounds.pad(.15));
-  updateLayers();
-}
-
-/*** ===== ROUTE / PRICE (unverändert) ===== */
+/*** ===== ROUTE / PRICE ===== */
 function luftlinieKm(a,b){
   const R=6371,toRad=x=>x*Math.PI/180, dLat=toRad(b.lat-a.lat), dLon=toRad(b.lon-a.lon), la1=toRad(a.lat), la2=toRad(b.lat);
   const h=Math.sin(dLat/2)**2+Math.cos(la1)*Math.cos(la2)*Math.sin(dLon/2)**2;
@@ -524,11 +526,11 @@ async function showRouteByCoords(aLabel,aCoord,bLabel,bCoord){
   const base = firm ? ((isPellets() && useSack) ? firm.preisSack : firm.preis) : 0;
 
   const {total, preisProKm, margeFaktor} = calcDeliveredPrice(distKm, base);
+  const margeTxt = (margeFaktor===1.20) ? "20%" : "5%";
 
   if(routeLine) map.removeLayer(routeLine);
   routeLine=L.polyline(coords,{color:"blue",weight:5,opacity:.85,dashArray:dashed?"8 8":null}).addTo(map);
   const mid=coords[Math.floor(coords.length/2)];
-  const margeTxt = (margeFaktor===1.20) ? "20%" : "5%";
 
   L.popup().setLatLng(mid).setContent(`
     <b>Route:</b> ${aLabel} ↔ ${bLabel}<br>
@@ -547,12 +549,126 @@ function showRoute(a,b){ return showRouteByCoords(a.label, a.coord, b.label, b.c
 
 function pickPoint(label,coord){
   selectedPoints.push({label,coord});
-  if(selectedPoints.length===2){const [a,b]=selectedPoints; selectedPoints=[]; showRoute(a,b);}
+  if(selectedPoints.length===2){
+    const [a,b]=selectedPoints; selectedPoints=[];
+    showRoute(a,b);
+  }
 }
 function clearRoute(){
   if(routeLine){ map.removeLayer(routeLine); routeLine = null; }
   map.closePopup();
   selectedPoints = [];
+}
+
+/*** ====== BUILD MAP (geocache.json) ====== ***/
+let missingAddresses = new Set();
+let routeLine = null;
+
+function renderMissingBox(){
+  // remove old area
+  const dbgEl = document.getElementById("dbg");
+  if(!dbgEl) return;
+
+  const old = dbgEl.querySelector(".missingWrap");
+  if(old) old.remove();
+
+  if(missingAddresses.size === 0) return;
+
+  const wrap = document.createElement("div");
+  wrap.className = "missingWrap";
+  const list = [...missingAddresses].slice(0, 200).join("\n");
+
+  wrap.innerHTML = `
+    <div style="margin-top:8px;font-weight:700">Fehlende Orte (${missingAddresses.size})</div>
+    <div style="opacity:.85;margin-top:2px">Diese Adressen fehlen in geocache.json / localStorage:</div>
+    <button class="btn" id="copyMissing">📋 Kopieren</button>
+    <textarea readonly id="missingText"></textarea>
+  `;
+  dbgEl.appendChild(wrap);
+
+  const ta = wrap.querySelector("#missingText");
+  ta.value = list;
+
+  wrap.querySelector("#copyMissing").addEventListener("click", async ()=>{
+    try{
+      await navigator.clipboard.writeText(ta.value);
+      dbg("Fehlende Orte kopiert ✅", true);
+    }catch(e){
+      ta.select();
+      document.execCommand("copy");
+      dbg("Kopieren (fallback) ✅", true);
+    }
+  });
+}
+
+async function buildMap(){
+  const myToken=++buildToken;
+
+  for(const m of alleMarker){ try{ map.removeLayer(m.marker);}catch(e){} }
+  alleMarker=[];
+  missingAddresses = new Set();
+
+  const bounds=L.latLngBounds();
+
+  // Firmen
+  for(const w of werke){
+    if(myToken!==buildToken) return;
+
+    const c = await getCoordForAddress(w.ort);
+    if(!c){
+      missingAddresses.add(str(w.ort));
+      continue;
+    }
+
+    const farbe = (isPellets() && sackAktiv()) ? w.farbeSack : w.farbeWerk;
+    const cm=L.circleMarker([c.lat,c.lon],{radius:8,color:farbe,fillColor:farbe,fillOpacity:.85})
+      .bindTooltip("",{sticky:true})
+      .on("tooltipopen",()=>cm.getTooltip().setContent(tooltipFirma({...w,country_code:c.country_code||""})))
+      .on("click",()=>pickPoint(w.firma,{lat:c.lat,lon:c.lon}));
+
+    alleMarker.push({type:"firma",marker:cm,...w,country_code:c.country_code||"", _coord:{lat:c.lat,lon:c.lon}});
+    bounds.extend([c.lat,c.lon]);
+  }
+
+  // Kunden
+  for(const k of kunden){
+    if(myToken!==buildToken) return;
+
+    const c = await getCoordForAddress(k.ort);
+    if(!c){
+      missingAddresses.add(str(k.ort));
+      continue;
+    }
+
+    let type="kunde", icon=iconBlue;
+    if(isPellets()){
+      const isSackOnly=(k.sackware==="ja")&&(k.lose!=="ja");
+      const isSonstige=(k.sonstige==="ja");
+      type=isSonstige?"sonstige":isSackOnly?"sackkunde":"kunde";
+      icon=isSonstige?iconOrange:isSackOnly?iconPurple:iconBlue;
+    }else{
+      type="streukunde";
+      icon=iconBlue;
+    }
+
+    const mk=L.marker([c.lat,c.lon],{icon})
+      .bindTooltip(`<b>${k.name}</b><br>${k.ort}`,{sticky:true})
+      .on("click",()=>pickPoint(k.name,{lat:c.lat,lon:c.lon}));
+
+    alleMarker.push({type,marker:mk,...k,country_code:c.country_code||"", _coord:{lat:c.lat,lon:c.lon}});
+    bounds.extend([c.lat,c.lon]);
+  }
+
+  if(bounds.isValid()) map.fitBounds(bounds.pad(.15));
+  updateLayers();
+
+  if(missingAddresses.size){
+    dbg(`Fehlende Koordinaten: ${missingAddresses.size} (siehe Box unten)`, false);
+    renderMissingBox();
+  }else{
+    dbg("Alle Orte gefunden ✅", true);
+    renderMissingBox();
+  }
 }
 
 /*** ===== LAYERS ===== */
@@ -577,8 +693,6 @@ function updateLayers(){
   for(const m of alleMarker){
     if(map.hasLayer(m.marker)) map.removeLayer(m.marker);
 
-    // Wenn du Ländercodes nicht im Sheet hast, dann kann sauberer Country-Filter nicht funktionieren.
-    // Deshalb: nur filtern, wenn country_code vorhanden ist.
     if(!noCountry && m.country_code && !selected.includes(m.country_code)) continue;
 
     if(m.type==="kunde"){ if(showPelletK) map.addLayer(m.marker); continue; }
@@ -681,6 +795,14 @@ searchInput.addEventListener("keydown",async e=>{
     if(i===0) m.marker.openTooltip?.();
   });
 
+  // zusätzlich: Suche als "Ort" nur, wenn im Cache vorhanden
+  const c = await getCoordForAddress(raw);
+  if(c){
+    const ll=[c.lat,c.lon];
+    searchMarker=L.circleMarker(ll,{radius:8,color:"blue",fillColor:"blue",fillOpacity:.5}).addTo(map);
+    bounds.extend(ll);
+  }
+
   if(bounds.isValid()) map.fitBounds(bounds.pad(.2));
   else alert("Kein Treffer gefunden.");
 });
@@ -690,6 +812,8 @@ searchInput.addEventListener("keydown",async e=>{
   updateCountryButtonLabel();
   applyUnitUIOnly();
   dbg("Init…", true);
+
+  await loadGeoJson();          // <-- lädt geocache.json zuerst
   await switchUnit(unitSelect.value);
 })();
 </script>
