@@ -46,40 +46,11 @@ html,body{height:100%;margin:0}#map{height:100%;width:100%}
 .ctxbox .topbar{display:flex;justify-content:space-between;align-items:center;gap:8px}
 .ctxbox .xbtn{border:1px solid #ddd;background:#fff;border-radius:8px;cursor:pointer;padding:2px 8px; line-height:1.6;}
 .hidden{display:none!important}
-
-/* ===== Debug ===== */
-.debugbox{
-  position:absolute;left:12px;top:12px;z-index:9999;
-  background:#111;color:#fff;font:12px/1.35 system-ui,Arial;
-  padding:10px 12px;border-radius:12px;max-width:420px;
-  box-shadow:0 10px 24px rgba(0,0,0,.25);
-  opacity:.94
-}
-.debugbox b{display:block;margin-bottom:6px}
-.debugbox .ok{color:#76ff7a}
-.debugbox .bad{color:#ff6b6b}
-.debugbox .muted{opacity:.8}
-.debugbox textarea{
-  width:100%; min-height:120px; resize:vertical;
-  border-radius:10px; border:1px solid rgba(255,255,255,.2);
-  padding:8px; box-sizing:border-box; color:#fff; background:#0d0d0d;
-  font:12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-.debugbox button{
-  margin-top:8px;
-  border:1px solid rgba(255,255,255,.15);
-  background:#fff;color:#111;border-radius:10px;cursor:pointer;
-  padding:7px 10px;font-weight:600;
-}
 </style>
 </head>
 
 <body>
 <div id="map"></div>
-<div class="debugbox" id="dbg">
-  <b>Debug</b>
-  <div class="muted">Start…</div>
-</div>
 
 <!-- Suche + Länder + Unit -->
 <div class="box search">
@@ -168,17 +139,6 @@ const sheetUrlKundenPellets   = `https://docs.google.com/spreadsheets/d/${sheetI
 const sheetUrlFirmenStreusalz = `https://docs.google.com/spreadsheets/d/${sheetIdFirmen}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(STREUSALZ_SHEET_NAME)}`;
 const sheetUrlKundenStreusalz = `https://docs.google.com/spreadsheets/d/${sheetIdKunden}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(STREUSALZ_SHEET_NAME)}`;
 
-/*** ===== DEBUG ===== */
-const dbgEl = document.getElementById("dbg");
-function dbg(msg, ok=true){
-  const line=document.createElement("div");
-  line.className = ok ? "ok" : "bad";
-  line.textContent = msg;
-  dbgEl.appendChild(line);
-}
-window.addEventListener("error", (e)=>dbg("JS ERROR: "+(e.message||"unknown"), false));
-window.addEventListener("unhandledrejection", (e)=>dbg("PROMISE ERROR: "+(e.reason?.message||e.reason||"unknown"), false));
-
 /*** ====== MAP ====== ***/
 const map=L.map("map").setView([51,11],5);
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{minZoom:4,maxZoom:18,attribution:"&copy; OpenStreetMap"}).addTo(map);
@@ -243,25 +203,20 @@ const geoCache = JSON.parse(localStorage.getItem("geoCachePellets_EU")||"{}");
 const saveGeo=()=>localStorage.setItem("geoCachePellets_EU",JSON.stringify(geoCache));
 
 async function loadGeoCacheFile(){
-  dbg("Lade geocache.json …", true);
   try{
     const r = await fetch("./geocache.json", {cache:"no-store"});
     if(!r.ok){
-      dbg(`geocache.json FEHLT (HTTP ${r.status})`, false);
       fileGeoCache = {};
       return;
     }
     const j = await r.json();
     if(j && typeof j === "object"){
       fileGeoCache = j;
-      dbg(`geocache.json OK: ${Object.keys(fileGeoCache).length} Einträge`, true);
     }else{
       fileGeoCache = {};
-      dbg("geocache.json ist kein Objekt", false);
     }
   }catch(e){
     fileGeoCache = {};
-    dbg("geocache.json FAIL: "+(e.message||"unknown"), false);
   }
 }
 
@@ -414,15 +369,13 @@ async function loadWerkeForUnit(unit){
   if(unit==="streusalz" && werkeStreusalz) return werkeStreusalz;
 
   const url = (unit==="pellets") ? sheetUrlFirmenPellets : sheetUrlFirmenStreusalz;
-  dbg("Lade FIRMEN: "+unit+" …", true);
 
   const data = await new Promise(res=>Papa.parse(url,{
     download:true, header:false, skipEmptyLines:true,
     complete:r=>{
-      dbg(`FIRMEN OK (${unit}): rows=${(r.data||[]).length} errors=${(r.errors||[]).length}`, true);
-      try{ res(normalizePreise(parseFirmenArray(r.data||[]))) }catch(e){ dbg("FIRMEN PARSE: "+e.message,false); res([]) }
+      try{ res(normalizePreise(parseFirmenArray(r.data||[]))) }catch(e){ res([]) }
     },
-    error: err=>{ dbg("FIRMEN FAIL: "+(err?.message||"unknown"), false); res([]); }
+    error: _err=>{ res([]); }
   }));
 
   if(unit==="pellets") werkePellets = data;
@@ -435,15 +388,13 @@ async function loadKundenForUnit(unit){
   if(unit==="streusalz" && kundenStreusalz) return kundenStreusalz;
 
   const url = (unit==="pellets") ? sheetUrlKundenPellets : sheetUrlKundenStreusalz;
-  dbg("Lade KUNDEN: "+unit+" …", true);
 
   const data = await new Promise(res=>Papa.parse(url,{
     download:true, header:true, skipEmptyLines:true,
     complete:r=>{
-      dbg(`KUNDEN OK (${unit}): rows=${(r.data||[]).length} errors=${(r.errors||[]).length}`, true);
-      try{ res(parseKunden(r.data||[])) }catch(e){ dbg("KUNDEN PARSE: "+e.message,false); res([]) }
+      try{ res(parseKunden(r.data||[])) }catch(e){ res([]) }
     },
-    error: err=>{ dbg("KUNDEN FAIL: "+(err?.message||"unknown"), false); res([]); }
+    error: _err=>{ res([]); }
   }));
 
   if(unit==="pellets") kundenPellets = data;
@@ -477,28 +428,6 @@ function tooltipFirma(m){
 }
 
 /*** ====== BUILD MAP (OHNE Bulk-Geocode) ====== ***/
-function renderMissingList(missing){
-  // alte Liste entfernen
-  const old = dbgEl.querySelector("textarea"); if(old) old.remove();
-  const oldBtn = dbgEl.querySelector("button"); if(oldBtn) oldBtn.remove();
-
-  if(!missing.length) return;
-
-  dbg(`Fehlende Orte: ${missing.length}`, false);
-
-  const ta = document.createElement("textarea");
-  ta.value = missing.join("\n");
-  dbgEl.appendChild(ta);
-
-  const btn = document.createElement("button");
-  btn.textContent = "Kopieren";
-  btn.onclick = async ()=>{
-    try{ await navigator.clipboard.writeText(ta.value); btn.textContent="Kopiert ✅"; setTimeout(()=>btn.textContent="Kopieren",900); }
-    catch(e){ alert("Kopieren ging nicht – markier den Text manuell."); }
-  };
-  dbgEl.appendChild(btn);
-}
-
 async function buildMap(){
   const myToken = ++buildToken;
 
@@ -509,13 +438,12 @@ async function buildMap(){
 
   const bounds=L.latLngBounds();
   let markerCount = 0;
-  const missing = [];
 
   // Firmen
   for(const w of werke){
     if(myToken !== buildToken) return;
     const c = getCoordForPlace(w.ort);
-    if(!c){ missing.push(w.ort); continue; }
+    if(!c) continue;
 
     const farbe = (isPellets() && sackAktiv()) ? w.farbeSack : w.farbeWerk;
     const cm=L.circleMarker([c.lat,c.lon],{radius:8,color:farbe,fillColor:farbe,fillOpacity:.85})
@@ -532,7 +460,7 @@ async function buildMap(){
   for(const k of kunden){
     if(myToken !== buildToken) return;
     const c = getCoordForPlace(k.ort);
-    if(!c){ missing.push(k.ort); continue; }
+    if(!c) continue;
 
     let type="kunde", icon=iconBlue;
     if(isPellets()){
@@ -557,10 +485,6 @@ async function buildMap(){
     bounds.extend([c.lat,c.lon]);
     markerCount++;
   }
-
-  dbg(`Marker gebaut: ${markerCount}`, markerCount>0);
-
-  renderMissingList(missing);
 
   if(bounds.isValid()) map.fitBounds(bounds.pad(.15));
   updateLayers();
@@ -849,8 +773,6 @@ async function switchUnit(newUnit){
   werke = await loadWerkeForUnit(currentUnit);
   kunden = await loadKundenForUnit(currentUnit);
 
-  dbg(`Nach Load: werke=${werke.length} kunden=${kunden.length}`, true);
-
   await buildMap();
 }
 
@@ -936,7 +858,6 @@ searchInput.addEventListener("keydown",async e=>{
 (async()=>{
   updateCountryButtonLabel();
   applyUnitUIOnly();
-  dbg("Init…", true);
 
   await loadGeoCacheFile();   // ✅ wichtig: zuerst geocache.json laden
   await switchUnit(unitSelect.value);
