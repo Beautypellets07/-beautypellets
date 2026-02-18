@@ -448,7 +448,7 @@ function tooltipFirma(m){
   const manTxt = isManual ? `<br><span class="small"><b>Manuell:</b> ${price.toFixed(2)} €</span>` : "";
   const z=m.zert?`<br><b>Zertifikat:</b> ${m.zert}`:"";
   const s=(isPellets() && m.sack)?`<br><b>Sackware:</b> ${m.sack}`:"";
-  const bb=(isPellets() && lc(m.bigbag)==="ja")?`<br><b>Big Bag:</b> ja`:"";
+  const bb=(isPellets() && lc(m.bigbag)==="ja")?`<br><b>Sackware:</b> Big Bag`:""; <!-- ✅ HIER GEÄNDERT -->
   return `<b>${m.firma}</b><br>${m.ort}<br>${preisTxt}${manTxt}${z}${s}${bb}`;
 }
 
