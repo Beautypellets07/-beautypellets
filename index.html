@@ -448,7 +448,7 @@ function tooltipFirma(m){
   const manTxt = isManual ? `<br><span class="small"><b>Manuell:</b> ${price.toFixed(2)} €</span>` : "";
   const z=m.zert?`<br><b>Zertifikat:</b> ${m.zert}`:"";
   const s=(isPellets() && m.sack)?`<br><b>Sackware:</b> ${m.sack}`:"";
-  const bb=(isPellets() && lc(m.bigbag)==="ja")?`<br><b>Sackware:</b> Big Bag`:""; <!-- ✅ HIER GEÄNDERT -->
+  const bb=(isPellets() && lc(m.bigbag)==="ja")?`<br><b>Sackware:</b> Big Bag`:"";
   return `<b>${m.firma}</b><br>${m.ort}<br>${preisTxt}${manTxt}${z}${s}${bb}`;
 }
 
@@ -691,6 +691,7 @@ function openCustomerMenu(kunde, coord, mouseEvent){
       <select id="ctxType">
         <option value="lose">Pellets lose</option>
         <option value="sack">Sackware</option>
+        <option value="bigbag">Sackware: Big Bag</option>
       </select>
     </div>
   ` : `
@@ -738,10 +739,10 @@ async function runTargetSearch(type, targetPrice){
   const resBox = ctxEl.querySelector("#ctxResults");
   resBox.innerHTML = `<div class="small">Suche…</div>`;
 
-  const firmsVisible = alleMarker
+  let firmsVisible = alleMarker
     .filter(m => m.type==="firma" && map.hasLayer(m.marker))
     .map(m => {
-      const isSack = isPellets() && (type === "sack");
+      const isSack = isPellets() && (type === "sack" || type === "bigbag");
 
       const key = `${currentUnit}|${isSack?"sack":"lose"}|${str(m.firma)}`;
       const manual = (isFinite(+manualPrices[key]) && +manualPrices[key]>0) ? +manualPrices[key] : null;
@@ -752,6 +753,11 @@ async function runTargetSearch(type, targetPrice){
       return { ...m, base, hasReal };
     })
     .filter(m => m.hasReal && isFinite(m.base) && m.base>0);
+
+  // ✅ Wenn Big Bag gewählt: nur Firmen mit BigBag = ja
+  if (isPellets() && type === "bigbag") {
+    firmsVisible = firmsVisible.filter(m => lc(m.bigbag) === "ja");
+  }
 
   if(!firmsVisible.length){
     resBox.innerHTML = `<div class="small">Keine passenden Firmen mit Preis gefunden (Filter/Layer beachten).</div>`;
@@ -784,9 +790,12 @@ async function runTargetSearch(type, targetPrice){
     return;
   }
 
-  const pill = isPellets() ? (type==="sack"?"Sackware":"Lose") : "Streusalz";
+  const pill = isPellets()
+    ? (type==="bigbag" ? "Big Bag" : (type==="sack" ? "Sackware" : "Lose"))
+    : "Streusalz";
+
   const baseLabel = isPellets()
-    ? (type==="sack" ? "Sackware-Preis" : "Werkspreis")
+    ? ((type==="sack" || type==="bigbag") ? "Sackware-Preis" : "Werkspreis")
     : "Werkspreis";
 
   resBox.innerHTML = matches.slice(0,20).map((m,i)=>`
