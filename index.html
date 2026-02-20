@@ -140,12 +140,29 @@ html,body{height:100%;margin:0}#map{height:100%;width:100%}
   border-bottom:1px solid #eee;
   font:14px/1.25 system-ui,Arial;
 }
+.indexTitleWrap{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  min-width:0;
+}
 .indexTitle{
   font-weight:700;
   white-space:nowrap;
   overflow:hidden;
   text-overflow:ellipsis;
 }
+.indexLockBtn{
+  border:1px solid #ddd;
+  background:#fff;
+  border-radius:10px;
+  cursor:pointer;
+  padding:2px 8px;
+  line-height:1.6;
+  user-select:none;
+}
+.indexLockBtn:hover{background:#fafafa}
+
 .indexControls{
   display:flex;
   gap:8px;
@@ -249,7 +266,10 @@ html,body{height:100%;margin:0}#map{height:100%;width:100%}
 
   <div class="indexPanel" id="indexPanel">
     <div class="indexHead">
-      <div class="indexTitle" id="indexFirmTitle">Preisindex</div>
+      <div class="indexTitleWrap">
+        <div class="indexTitle" id="indexFirmTitle">Preisindex</div>
+        <button class="indexLockBtn" id="indexLockBtn" type="button" title="Index entsperren">🔓</button>
+      </div>
       <div class="indexControls">
         <input id="indexFirmSearch" placeholder="Firma suchen…" autocomplete="off">
         <button id="indexFirmSearchBtn" type="button">Suchen</button>
@@ -365,12 +385,12 @@ const indexRange  = document.getElementById("indexRange");
 const indexFirmTitle = document.getElementById("indexFirmTitle");
 const indexFirmSearch = document.getElementById("indexFirmSearch");
 const indexFirmSearchBtn = document.getElementById("indexFirmSearchBtn");
+const indexLockBtn = document.getElementById("indexLockBtn");
 
 /*** ====== STATE / HELPERS ====== ***/
 let currentUnit = unitSelect.value;
 let buildToken = 0;
 
-// robust: entfernt alles außer Zahlen/.-/,
 const num=v=>{
   v=String(v??"").trim().replace(",",".");
   v=v.replace(/[^0-9.\-]/g,"");
@@ -380,6 +400,12 @@ const num=v=>{
 const lc=s=>String(s??"").toLowerCase().trim();
 const str=v=>String(v??"").trim();
 const uid=()=>Math.random().toString(36).slice(2) + Date.now().toString(36);
+
+// normalisiert Firmennamen robust (whitespace etc.)
+const normName = (s)=>{
+  s = str(s);
+  return lc(s).replace(/\s+/g," ").trim();
+};
 
 function isPellets(){ return currentUnit==="pellets"; }
 function sackAktiv(){
@@ -476,17 +502,26 @@ let historyRows = null;
 let historyByFirm = {};
 let activeIndexFirm = null;
 
-/* ✅ NEU: Index-Firma "fest" setzen (Lock) */
+// ✅ HARD LOCK: wenn true, darf Hover NIEMALS Index ändern
 let indexLocked = false;
 let indexLockedFirm = null;
-function lockIndexFirm(name){
-  indexLocked = true;
-  indexLockedFirm = str(name);
+
+function setIndexLock(state, firm){
+  indexLocked = !!state;
+  indexLockedFirm = indexLocked ? (firm ? str(firm) : indexLockedFirm) : null;
+  indexLockBtn.textContent = indexLocked ? "🔒" : "🔓";
+  indexLockBtn.title = indexLocked ? "Index ist fixiert (klicken zum lösen)" : "Index ist frei (klicken zum fixieren)";
 }
-function unlockIndexFirm(){
-  indexLocked = false;
-  indexLockedFirm = null;
-}
+indexLockBtn.addEventListener("click", ()=>{
+  if(indexLocked){
+    setIndexLock(false, null);
+    // Titel aktualisieren
+    if(activeIndexFirm) renderIndexForFirm(activeIndexFirm, {keepLock:true});
+  }else{
+    if(activeIndexFirm) setIndexLock(true, activeIndexFirm);
+    if(activeIndexFirm) renderIndexForFirm(activeIndexFirm, {keepLock:true});
+  }
+});
 
 function setIndexOpen(v){
   indexOpen = !!v;
@@ -494,20 +529,10 @@ function setIndexOpen(v){
   indexArrow.textContent = indexOpen ? "‹" : "›";
 }
 indexToggle.addEventListener("click", ()=> setIndexOpen(!indexOpen));
+
 indexRange.addEventListener("change", ()=>{
   const name = indexLocked ? indexLockedFirm : activeIndexFirm;
-  if(name) renderIndexForFirm(name);
-});
-
-/* ✅ Titel klickbar: lock/unlock */
-indexFirmTitle.style.cursor = "pointer";
-indexFirmTitle.title = "Klick: ausgewählte Firma fest / lösen";
-indexFirmTitle.addEventListener("click", ()=>{
-  if(indexLocked){
-    unlockIndexFirm();
-  }else{
-    if(activeIndexFirm) lockIndexFirm(activeIndexFirm);
-  }
+  if(name) renderIndexForFirm(name, {keepLock:true});
 });
 
 function parseDateFlex(s){
@@ -542,7 +567,6 @@ function filterByMonths(arr, months){
   return arr.filter(x=>x.date >= cutoff);
 }
 
-// Case-Insensitive Zugriff auf Headernamen
 function getCellCI(row, names){
   const keys = Object.keys(row||{});
   for(const want of names){
@@ -569,15 +593,15 @@ async function loadIndexHistoryOnce(){
     const loseRaw = getCellCI(row, ["losePreis","LosePreis","losepreis","Lose","lose"]);
     const sackRaw = getCellCI(row, ["sackPreis","SackPreis","sackpreis","Sack","sack"]);
 
-    const firm = lc(firmRaw);
-    if(!firm) continue;
+    const firmKey = normName(firmRaw);
+    if(!firmKey) continue;
 
     const d = parseDateFlex(dateRaw);
     if(!d) continue;
 
     const o = { date: d, lose: num(loseRaw), sack: num(sackRaw) };
-    if(!historyByFirm[firm]) historyByFirm[firm] = [];
-    historyByFirm[firm].push(o);
+    if(!historyByFirm[firmKey]) historyByFirm[firmKey] = [];
+    historyByFirm[firmKey].push(o);
   }
 
   for(const k of Object.keys(historyByFirm)){
@@ -620,9 +644,7 @@ function ensureIndexChart(){
         }
       },
       scales: {
-        y: {
-          ticks: { callback: (v)=> `${Math.round(+v)} €` }
-        }
+        y: { ticks: { callback: (v)=> `${Math.round(+v)} €` } }
       }
     }
   });
@@ -630,16 +652,16 @@ function ensureIndexChart(){
   return indexChart;
 }
 
-async function renderIndexForFirm(firmaName){
+async function renderIndexForFirm(firmaName, opts={}){
   await loadIndexHistoryOnce();
 
-  activeIndexFirm = firmaName;
-  const key = lc(firmaName);
-  const rows = historyByFirm[key] || [];
+  activeIndexFirm = str(firmaName);
 
-  // ✅ Titel zeigt auch Lock-Status
   const lockTag = indexLocked ? " (fix)" : "";
   indexFirmTitle.textContent = firmaName ? `Preisindex – ${firmaName}${lockTag}` : "Preisindex";
+
+  const key = normName(firmaName);
+  const rows = historyByFirm[key] || [];
 
   const chart = ensureIndexChart();
 
@@ -660,34 +682,36 @@ async function renderIndexForFirm(firmaName){
   chart.update();
 }
 
-/* ✅ NEU: echte Firmensuche (Teiltreffer) */
+/* ✅ Index-Suche: sucht erst in werke, dann in history keys */
 function findBestFirmMatch(query){
-  const q = lc(query);
+  const q = normName(query);
   if(!q) return null;
 
+  // 1) in werke (echte Firmennamen)
   const list = (werke || []).map(w => str(w.firma)).filter(Boolean);
 
-  let exact = list.find(n => lc(n) === q);
+  let exact = list.find(n => normName(n) === q);
   if(exact) return exact;
 
-  let starts = list.find(n => lc(n).startsWith(q));
+  let starts = list.find(n => normName(n).startsWith(q));
   if(starts) return starts;
 
-  let incl = list.find(n => lc(n).includes(q));
+  let incl = list.find(n => normName(n).includes(q));
   if(incl) return incl;
+
+  // 2) wenn nix: versuch in history keys (da sind evtl. andere Namen)
+  const keys = Object.keys(historyByFirm||{});
+  let hx = keys.find(k => k === q) || keys.find(k=>k.startsWith(q)) || keys.find(k=>k.includes(q));
+  if(hx) return hx; // return normalized key (wird trotzdem angezeigt)
 
   return null;
 }
 
-// ✅ Suchfeld im Index-Header
-function doIndexSearch(){
+async function doIndexSearch(){
   const input = str(indexFirmSearch.value);
   if(!input) return;
 
-  if(!werke || !werke.length){
-    alert("Firmen noch nicht geladen.");
-    return;
-  }
+  await loadIndexHistoryOnce();
 
   const match = findBestFirmMatch(input);
   if(!match){
@@ -695,8 +719,10 @@ function doIndexSearch(){
     return;
   }
 
-  lockIndexFirm(match);
-  renderIndexForFirm(match);
+  // ✅ sofort lock an (damit Hover NICHT überschreibt)
+  setIndexLock(true, match);
+
+  await renderIndexForFirm(match, {keepLock:true});
   setIndexOpen(true);
 }
 indexFirmSearchBtn.addEventListener("click", doIndexSearch);
@@ -943,8 +969,8 @@ function parseFirmenArray(table){
   let nameIdx = findIndex(headers, ["firma","name","werk"]); if(nameIdx<0) nameIdx = 0;
   let ortIdx  = findIndex(headers, ["ort","stadt","standort","adresse","location"]); if(ortIdx<0) ortIdx = 1;
 
-  const preisIdx = 2;
-  const standIdx = 3;
+  const preisIdx = 2;   // Spalte C
+  const standIdx = 3;   // Spalte D
 
   let sackIdx = findIndex(headers, ["sackwarenpreis","sackwarepreis","preis_sack","sackpreis","preis sack"]);
   if(sackIdx<0) sackIdx = 4;
@@ -1148,15 +1174,12 @@ function addFirmMarker(w){
     .on("tooltipopen", async ()=>{
       cm.getTooltip().setContent(tooltipFirma({...w,country_code:c.country_code}));
 
-      // ✅ WICHTIG: wenn gelockt -> NICHT überschreiben
+      // ✅ HIER ist der Kern: wenn gelockt → Hover darf NICHT ändern
       if(indexLocked) return;
 
-      await renderIndexForFirm(w.firma);
+      await renderIndexForFirm(w.firma, {keepLock:true});
     })
-    .on("click",()=>{
-      // optional: Klick setzt NICHT lock (du willst nur per Suche fixieren)
-      pickPoint(w.firma,{lat:c.lat,lon:c.lon});
-    })
+    .on("click",()=>pickPoint(w.firma,{lat:c.lat,lon:c.lon}))
     .on("contextmenu",(ev)=>{
       ev.originalEvent?.preventDefault?.();
       openFirmPricePopup(w, ev.latlng);
@@ -1208,7 +1231,8 @@ async function buildMap(){
 
   for(const m of alleMarker){ try{ map.removeLayer(m.marker); }catch(e){} }
   alleMarker=[];
-  if(searchMarker){ try{ map.removeLayer(searchMarker);}catch(e){} searchMarker=null; }
+  // SearchMarker NICHT automatisch killen hier (nur wenn du willst)
+  // if(searchMarker){ try{ map.removeLayer(searchMarker);}catch(e){} searchMarker=null; }
 
   const bounds=L.latLngBounds();
 
@@ -1231,19 +1255,9 @@ async function buildMap(){
 /*** ===== ROUTE / PRICE ===== */
 function luftlinieKm(a,b){
   const R=6371,toRad=x=>x*Math.PI/180, dLat=toRad(b.lat-a.lat), dLon=toRad(b.lon-a.lon), la1=toRad(a.lat), la2=toRad(b.lat);
-  const h=Math.sin(dLat/2)**2+Math.cos(la1)*la2?0:0; // placeholder removed below
-  return 0; // placeholder removed below
-}
-function luftlinieKm_fix(a,b){
-  const R=6371,toRad=x=>x*Math.PI/180;
-  const dLat=toRad(b.lat-a.lat), dLon=toRad(b.lon-a.lon);
-  const la1=toRad(a.lat), la2=toRad(b.lat);
   const h=Math.sin(dLat/2)**2+Math.cos(la1)*Math.cos(la2)*Math.sin(dLon/2)**2;
   return 2*R*Math.atan2(Math.sqrt(h),Math.sqrt(1-h));
 }
-// ✅ benutze die echte funktion
-luftlinieKm = luftlinieKm_fix;
-
 async function osrmDistKm(a,b){
   const url=`https://router.project-osrm.org/route/v1/driving/${a.lon},${a.lat};${b.lon},${b.lat}?overview=false`;
   const res=await fetch(url);
@@ -1286,7 +1300,7 @@ async function showRouteByCoords(aLabel,aCoord,bLabel,bCoord){
     }
   }catch(e){}
   if(!distKm){
-    distKm=luftlinieKm({lat:aCoord.lat,lon:aCoord.lon},{lat:bCoord.lat,lon:bCoord.lon});
+    distKm=luftlinieKm(aCoord,bCoord);
     coords=[[aCoord.lat,aCoord.lon],[bCoord.lat,bCoord.lon]];
     dashed=true;
   }
@@ -1471,9 +1485,12 @@ async function runTargetSearch(type, targetPrice){
 
 /*** ===== LAYERS ===== */
 function updateLayers(){
+  // ✅ Route wird wie gehabt gecleart, aber:
   if(routeLine){map.removeLayer(routeLine);routeLine=null}
-  map.closePopup(); selectedPoints=[];
-  if(searchMarker){map.removeLayer(searchMarker);searchMarker=null}
+  selectedPoints=[];
+
+  // ✅ NICHT mehr: map.closePopup(); (würde Search/Infos killen)
+  // ✅ NICHT mehr: searchMarker löschen
 
   const selected=getSelectedCountries(), noCountry=(selected.length===1&&selected[0]==="all");
   const en=chkEnPlus.checked, din=chkDINplus.checked, sure=chkSURE.checked, cpp=chkCPP.checked, ohne=chkOhneZert.checked;
@@ -1553,7 +1570,8 @@ async function switchUnit(newUnit){
   clearRoute();
   closeAddFirmModal();
 
-  unlockIndexFirm(); // ✅ Unit-Wechsel: Lock aus
+  // ✅ beim Unit-Wechsel: Index Lock aus (sonst verwirrend)
+  setIndexLock(false, null);
 
   const baseWerke = await loadWerkeForUnit(currentUnit);
   const extra = (customFirms[currentUnit] || []);
@@ -1576,12 +1594,15 @@ map.on("click", (e)=>{
     return;
   }
 });
+
 document.addEventListener("keydown", (e)=>{
   if(e.key === "Escape"){
     closeAddFirmModal();
     clearRoute();
     closeCtx();
-    unlockIndexFirm(); // ✅ ESC löst den Lock
+    // ESC löst Lock (damit du schnell wieder Hover nutzen kannst)
+    setIndexLock(false, null);
+    if(activeIndexFirm) renderIndexForFirm(activeIndexFirm, {keepLock:true});
   }
 });
 
@@ -1643,6 +1664,7 @@ searchInput.addEventListener("keydown",async e=>{
   closeCtx();
   clearRoute();
   closeAddFirmModal();
+
   if(searchMarker){ try{ map.removeLayer(searchMarker); }catch(err){} searchMarker=null; }
 
   const q=lc(raw);
@@ -1687,6 +1709,10 @@ searchInput.addEventListener("keydown",async e=>{
   refreshLegendThresholdUI();
 
   ensureIndexChart();
+
+  // initial lock button state
+  setIndexLock(false, null);
+
   await switchUnit(unitSelect.value);
 })();
 </script>
