@@ -85,6 +85,18 @@ html,body{height:100%;margin:0}#map{height:100%;width:100%}
 .modalBody input{
   width:100%; padding:8px 10px; border:1px solid #ccc; border-radius:8px; outline:none; box-sizing:border-box;
 }
+
+/* ===== NEU: Inputs für Farb-Grenzen in der Legende ===== */
+.thInp{
+  width:70px;
+  padding:2px 6px;
+  border:1px solid #ccc;
+  border-radius:6px;
+  outline:none;
+  box-sizing:border-box;
+  font:12px/1.2 system-ui, Arial;
+  margin:0 4px;
+}
 </style>
 </head>
 
@@ -150,9 +162,23 @@ html,body{height:100%;margin:0}#map{height:100%;width:100%}
 <!-- Farben + Kunden -->
 <div class="box legend" id="legendBox">
   <b>Filter Farben</b><br>
-  <label><input type="checkbox" id="chkGruen" checked> 🟢 ≤ 260 €</label><br>
-  <label><input type="checkbox" id="chkOrange" checked> 🟠 260–285 €</label><br>
-  <label><input type="checkbox" id="chkRot" checked> 🔴 ≥ 285 €</label><br>
+
+  <!-- ✅ NEU: Grenzen editierbar + bleiben gespeichert -->
+  <label>
+    <input type="checkbox" id="chkGruen" checked>
+    🟢 ≤ <input class="thInp" id="thGreen" type="number" step="0.01"> €
+  </label><br>
+
+  <label>
+    <input type="checkbox" id="chkOrange" checked>
+    🟠 <span id="thOrangeFromTxt">…</span>–<input class="thInp" id="thOrange" type="number" step="0.01"> €
+  </label><br>
+
+  <label>
+    <input type="checkbox" id="chkRot" checked>
+    🔴 ≥ <span id="thRedFromTxt">…</span> €
+  </label><br>
+
   <label><input type="checkbox" id="chkGrau" checked> ⚪ kein Preis</label><br>
 
   <div id="kundenFilterPellets">
@@ -216,6 +242,12 @@ const chkSackKunden = document.getElementById("chkSackKunden");
 const chkSonstigeKunden = document.getElementById("chkSonstigeKunden");
 const chkKundenStreusalz = document.getElementById("chkKundenStreusalz");
 
+/* ✅ NEU: Inputs / Texte für Schwellenwerte */
+const thGreen = document.getElementById("thGreen");
+const thOrange = document.getElementById("thOrange");
+const thOrangeFromTxt = document.getElementById("thOrangeFromTxt");
+const thRedFromTxt = document.getElementById("thRedFromTxt");
+
 /*** ====== STATE / HELPERS ====== ***/
 let currentUnit = unitSelect.value;
 let buildToken = 0;
@@ -229,10 +261,54 @@ function isPellets(){ return currentUnit==="pellets"; }
 function sackAktiv(){
   return isPellets() && (chkSackFireflies.checked || chkSack15kg.checked || chkBigBag.checked);
 }
+
+/*** ====== NEU: Farb-Schwellen (editierbar, gespeichert) ====== ***/
+const THRESH_KEY = "colorThresholds_EU_v1";
+let thresholds = JSON.parse(localStorage.getItem(THRESH_KEY) || "{}");
+const saveThresholds = ()=>localStorage.setItem(THRESH_KEY, JSON.stringify(thresholds));
+
+function priceTypeKey(){
+  if(!isPellets()) return "lose";
+  return sackAktiv() ? "sack" : "lose";
+}
+function ensureThresholdObj(){
+  if(!thresholds || typeof thresholds!=="object") thresholds = {};
+  if(!thresholds[currentUnit]) thresholds[currentUnit] = {};
+  const pt = priceTypeKey();
+  if(!thresholds[currentUnit][pt]) thresholds[currentUnit][pt] = { greenMax: 260, orangeMax: 285 };
+  // Fallback / Reparatur
+  const t = thresholds[currentUnit][pt];
+  if(!isFinite(+t.greenMax) || +t.greenMax<=0) t.greenMax = 260;
+  if(!isFinite(+t.orangeMax) || +t.orangeMax<=0) t.orangeMax = 285;
+  if(+t.orangeMax <= +t.greenMax) t.orangeMax = +t.greenMax + 1;
+  return t;
+}
+function getThresholds(){
+  return ensureThresholdObj();
+}
+function setThresholds(greenMax, orangeMax){
+  const pt = priceTypeKey();
+  ensureThresholdObj();
+  thresholds[currentUnit][pt].greenMax = greenMax;
+  thresholds[currentUnit][pt].orangeMax = orangeMax;
+  saveThresholds();
+}
+function refreshLegendThresholdUI(){
+  const t = getThresholds();
+  thGreen.value = (+t.greenMax).toFixed(2);
+  thOrange.value = (+t.orangeMax).toFixed(2);
+  thOrangeFromTxt.textContent = (+t.greenMax).toFixed(2);
+  thRedFromTxt.textContent = (+t.orangeMax).toFixed(2);
+}
+
+/* 🔥 Dynamische Farbe anhand Schwellen */
 function colorForPrice(p,kein){
+  const t = getThresholds();
+  const g = +t.greenMax;
+  const o = +t.orangeMax;
   if(kein||!isFinite(p)||p<=0) return "#9e9e9e";
-  if(p<=260) return "green";
-  if(p<285) return "orange";
+  if(p<=g) return "green";
+  if(p<o) return "orange";
   return "red";
 }
 
@@ -241,10 +317,6 @@ const MANUAL_KEY = "manualPrices_EU_v1";
 let manualPrices = JSON.parse(localStorage.getItem(MANUAL_KEY) || "{}");
 const saveManual = ()=>localStorage.setItem(MANUAL_KEY, JSON.stringify(manualPrices));
 
-function priceTypeKey(){
-  if(!isPellets()) return "lose";
-  return sackAktiv() ? "sack" : "lose";
-}
 function manualKeyForFirm(firma){
   return `${currentUnit}|${priceTypeKey()}|${str(firma)}`;
 }
@@ -1111,6 +1183,7 @@ function applyUnitUIOnly(){
     chkSack15kg.checked = false;
     chkBigBag.checked = false;
   }
+  refreshLegendThresholdUI();
 }
 
 /*** ===== UNIT SWITCH ===== */
@@ -1129,7 +1202,9 @@ async function switchUnit(newUnit){
 
   await buildMap();
 }
-unitSelect.addEventListener("change", async ()=>{ await switchUnit(unitSelect.value); });
+unitSelect.addEventListener("change", async ()=>{
+  await switchUnit(unitSelect.value);
+});
 
 /*** ===== EVENTS ===== */
 map.on("click", (e)=>{
@@ -1152,6 +1227,22 @@ document.addEventListener("mousedown",(e)=>{
 map.on("movestart", closeCtx);
 map.on("zoomstart", closeCtx);
 
+/* ✅ NEU: Schwellen speichern, wenn du im Feld etwas änderst */
+function clampThresholdsFromInputs(){
+  let g = num(thGreen.value);
+  let o = num(thOrange.value);
+  if(!isFinite(g) || g<=0) g = 260;
+  if(!isFinite(o) || o<=0) o = 285;
+  if(o <= g) o = g + 1;
+  setThresholds(g, o);
+  refreshLegendThresholdUI();
+  updateLayers();
+}
+thGreen.addEventListener("change", clampThresholdsFromInputs);
+thOrange.addEventListener("change", clampThresholdsFromInputs);
+thGreen.addEventListener("keydown",(e)=>{ if(e.key==="Enter") { e.preventDefault(); clampThresholdsFromInputs(); } });
+thOrange.addEventListener("keydown",(e)=>{ if(e.key==="Enter") { e.preventDefault(); clampThresholdsFromInputs(); } });
+
 document.addEventListener("change",e=>{
   if(e.target?.matches('input[type="checkbox"]')){
     if(e.target.classList.contains("countryChk")){
@@ -1159,6 +1250,12 @@ document.addEventListener("change",e=>{
       if(e.target.value!=="all"&&e.target.checked) document.querySelector('.countryChk[value="all"]').checked=false;
       updateCountryButtonLabel();
     }
+
+    /* ✅ Wenn Sackware-Filter gewechselt wird, sind wir evtl. in anderem Preis-Modus (lose/sack) */
+    if(e.target===chkSackFireflies || e.target===chkSack15kg || e.target===chkBigBag){
+      refreshLegendThresholdUI();
+    }
+
     updateLayers();
   }
 });
@@ -1223,6 +1320,10 @@ searchInput.addEventListener("keydown",async e=>{
   applyUnitUIOnly();
 
   await loadGeoCacheFile();
+
+  /* ✅ Legende initial mit gespeicherten Werten füllen */
+  refreshLegendThresholdUI();
+
   await switchUnit(unitSelect.value);
 })();
 </script>
