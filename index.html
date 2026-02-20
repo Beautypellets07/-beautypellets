@@ -370,6 +370,7 @@ const indexFirmSearchBtn = document.getElementById("indexFirmSearchBtn");
 let currentUnit = unitSelect.value;
 let buildToken = 0;
 
+// robust: entfernt alles außer Zahlen/.-/,
 const num=v=>{
   v=String(v??"").trim().replace(",",".");
   v=v.replace(/[^0-9.\-]/g,"");
@@ -475,13 +476,39 @@ let historyRows = null;
 let historyByFirm = {};
 let activeIndexFirm = null;
 
+/* ✅ NEU: Index-Firma "fest" setzen (Lock) */
+let indexLocked = false;
+let indexLockedFirm = null;
+function lockIndexFirm(name){
+  indexLocked = true;
+  indexLockedFirm = str(name);
+}
+function unlockIndexFirm(){
+  indexLocked = false;
+  indexLockedFirm = null;
+}
+
 function setIndexOpen(v){
   indexOpen = !!v;
   indexPanel.classList.toggle("open", indexOpen);
   indexArrow.textContent = indexOpen ? "‹" : "›";
 }
 indexToggle.addEventListener("click", ()=> setIndexOpen(!indexOpen));
-indexRange.addEventListener("change", ()=>{ if(activeIndexFirm) renderIndexForFirm(activeIndexFirm); });
+indexRange.addEventListener("change", ()=>{
+  const name = indexLocked ? indexLockedFirm : activeIndexFirm;
+  if(name) renderIndexForFirm(name);
+});
+
+/* ✅ Titel klickbar: lock/unlock */
+indexFirmTitle.style.cursor = "pointer";
+indexFirmTitle.title = "Klick: ausgewählte Firma fest / lösen";
+indexFirmTitle.addEventListener("click", ()=>{
+  if(indexLocked){
+    unlockIndexFirm();
+  }else{
+    if(activeIndexFirm) lockIndexFirm(activeIndexFirm);
+  }
+});
 
 function parseDateFlex(s){
   s = str(s);
@@ -514,6 +541,8 @@ function filterByMonths(arr, months){
   cutoff.setMonth(cutoff.getMonth() - m);
   return arr.filter(x=>x.date >= cutoff);
 }
+
+// Case-Insensitive Zugriff auf Headernamen
 function getCellCI(row, names){
   const keys = Object.keys(row||{});
   for(const want of names){
@@ -608,7 +637,10 @@ async function renderIndexForFirm(firmaName){
   const key = lc(firmaName);
   const rows = historyByFirm[key] || [];
 
-  indexFirmTitle.textContent = firmaName ? `Preisindex – ${firmaName}` : "Preisindex";
+  // ✅ Titel zeigt auch Lock-Status
+  const lockTag = indexLocked ? " (fix)" : "";
+  indexFirmTitle.textContent = firmaName ? `Preisindex – ${firmaName}${lockTag}` : "Preisindex";
+
   const chart = ensureIndexChart();
 
   if(!rows.length){
@@ -628,10 +660,44 @@ async function renderIndexForFirm(firmaName){
   chart.update();
 }
 
+/* ✅ NEU: echte Firmensuche (Teiltreffer) */
+function findBestFirmMatch(query){
+  const q = lc(query);
+  if(!q) return null;
+
+  const list = (werke || []).map(w => str(w.firma)).filter(Boolean);
+
+  let exact = list.find(n => lc(n) === q);
+  if(exact) return exact;
+
+  let starts = list.find(n => lc(n).startsWith(q));
+  if(starts) return starts;
+
+  let incl = list.find(n => lc(n).includes(q));
+  if(incl) return incl;
+
+  return null;
+}
+
+// ✅ Suchfeld im Index-Header
 function doIndexSearch(){
-  const name = str(indexFirmSearch.value);
-  if(!name) return;
-  renderIndexForFirm(name);
+  const input = str(indexFirmSearch.value);
+  if(!input) return;
+
+  if(!werke || !werke.length){
+    alert("Firmen noch nicht geladen.");
+    return;
+  }
+
+  const match = findBestFirmMatch(input);
+  if(!match){
+    alert("Firma nicht gefunden.");
+    return;
+  }
+
+  lockIndexFirm(match);
+  renderIndexForFirm(match);
+  setIndexOpen(true);
 }
 indexFirmSearchBtn.addEventListener("click", doIndexSearch);
 indexFirmSearch.addEventListener("keydown",(e)=>{ if(e.key==="Enter"){ e.preventDefault(); doIndexSearch(); }});
@@ -691,13 +757,6 @@ let werkePellets=null, werkeStreusalz=null, werke=[];
 let kundenPellets=null, kundenStreusalz=null, kunden=[];
 let alleMarker=[], selectedPoints=[], routeLine=null, searchMarker=null;
 let ctxEl=null, ctxCustomer=null;
-
-/* ✅ NEU: Such-Popup "fest" (bleibt auch wenn du über andere Firmen hoverst) */
-let searchPopup = null;
-function clearSearch(){
-  if(searchMarker){ try{ map.removeLayer(searchMarker);}catch(e){} searchMarker=null; }
-  if(searchPopup){ try{ map.closePopup(searchPopup);}catch(e){} searchPopup=null; }
-}
 
 function closeCtx(){ if(ctxEl){ctxEl.remove(); ctxEl=null;} ctxCustomer=null; }
 function stopEvt(el){
@@ -1088,9 +1147,16 @@ function addFirmMarker(w){
     .bindTooltip("",{sticky:true})
     .on("tooltipopen", async ()=>{
       cm.getTooltip().setContent(tooltipFirma({...w,country_code:c.country_code}));
+
+      // ✅ WICHTIG: wenn gelockt -> NICHT überschreiben
+      if(indexLocked) return;
+
       await renderIndexForFirm(w.firma);
     })
-    .on("click",()=>pickPoint(w.firma,{lat:c.lat,lon:c.lon}))
+    .on("click",()=>{
+      // optional: Klick setzt NICHT lock (du willst nur per Suche fixieren)
+      pickPoint(w.firma,{lat:c.lat,lon:c.lon});
+    })
     .on("contextmenu",(ev)=>{
       ev.originalEvent?.preventDefault?.();
       openFirmPricePopup(w, ev.latlng);
@@ -1142,7 +1208,7 @@ async function buildMap(){
 
   for(const m of alleMarker){ try{ map.removeLayer(m.marker); }catch(e){} }
   alleMarker=[];
-  clearSearch();
+  if(searchMarker){ try{ map.removeLayer(searchMarker);}catch(e){} searchMarker=null; }
 
   const bounds=L.latLngBounds();
 
@@ -1165,9 +1231,19 @@ async function buildMap(){
 /*** ===== ROUTE / PRICE ===== */
 function luftlinieKm(a,b){
   const R=6371,toRad=x=>x*Math.PI/180, dLat=toRad(b.lat-a.lat), dLon=toRad(b.lon-a.lon), la1=toRad(a.lat), la2=toRad(b.lat);
+  const h=Math.sin(dLat/2)**2+Math.cos(la1)*la2?0:0; // placeholder removed below
+  return 0; // placeholder removed below
+}
+function luftlinieKm_fix(a,b){
+  const R=6371,toRad=x=>x*Math.PI/180;
+  const dLat=toRad(b.lat-a.lat), dLon=toRad(b.lon-a.lon);
+  const la1=toRad(a.lat), la2=toRad(b.lat);
   const h=Math.sin(dLat/2)**2+Math.cos(la1)*Math.cos(la2)*Math.sin(dLon/2)**2;
   return 2*R*Math.atan2(Math.sqrt(h),Math.sqrt(1-h));
 }
+// ✅ benutze die echte funktion
+luftlinieKm = luftlinieKm_fix;
+
 async function osrmDistKm(a,b){
   const url=`https://router.project-osrm.org/route/v1/driving/${a.lon},${a.lat};${b.lon},${b.lat}?overview=false`;
   const res=await fetch(url);
@@ -1210,7 +1286,7 @@ async function showRouteByCoords(aLabel,aCoord,bLabel,bCoord){
     }
   }catch(e){}
   if(!distKm){
-    distKm=luftlinieKm(aCoord,bCoord);
+    distKm=luftlinieKm({lat:aCoord.lat,lon:aCoord.lon},{lat:bCoord.lat,lon:bCoord.lon});
     coords=[[aCoord.lat,aCoord.lon],[bCoord.lat,bCoord.lon]];
     dashed=true;
   }
@@ -1396,7 +1472,8 @@ async function runTargetSearch(type, targetPrice){
 /*** ===== LAYERS ===== */
 function updateLayers(){
   if(routeLine){map.removeLayer(routeLine);routeLine=null}
-  selectedPoints=[];
+  map.closePopup(); selectedPoints=[];
+  if(searchMarker){map.removeLayer(searchMarker);searchMarker=null}
 
   const selected=getSelectedCountries(), noCountry=(selected.length===1&&selected[0]==="all");
   const en=chkEnPlus.checked, din=chkDINplus.checked, sure=chkSURE.checked, cpp=chkCPP.checked, ohne=chkOhneZert.checked;
@@ -1475,7 +1552,8 @@ async function switchUnit(newUnit){
   closeCtx();
   clearRoute();
   closeAddFirmModal();
-  clearSearch();
+
+  unlockIndexFirm(); // ✅ Unit-Wechsel: Lock aus
 
   const baseWerke = await loadWerkeForUnit(currentUnit);
   const extra = (customFirms[currentUnit] || []);
@@ -1503,7 +1581,7 @@ document.addEventListener("keydown", (e)=>{
     closeAddFirmModal();
     clearRoute();
     closeCtx();
-    clearSearch();
+    unlockIndexFirm(); // ✅ ESC löst den Lock
   }
 });
 
@@ -1565,7 +1643,7 @@ searchInput.addEventListener("keydown",async e=>{
   closeCtx();
   clearRoute();
   closeAddFirmModal();
-  clearSearch();
+  if(searchMarker){ try{ map.removeLayer(searchMarker); }catch(err){} searchMarker=null; }
 
   const q=lc(raw);
   const matches=alleMarker.filter(m=>{
@@ -1574,32 +1652,12 @@ searchInput.addEventListener("keydown",async e=>{
   });
 
   const bounds=L.latLngBounds();
-
-  // ✅ Treffer aus der Tabelle: sichtbar machen + Bounds
-  matches.forEach((m)=>{
+  matches.forEach((m,i)=>{
     if(!map.hasLayer(m.marker)) map.addLayer(m.marker);
     bounds.extend(m.marker.getLatLng());
+    if(i===0) m.marker.openTooltip?.();
   });
 
-  // ✅ "Festes" Popup auf dem ERSTEN Treffer (bleibt beim Hover über andere Marker)
-  if(matches.length){
-    const first = matches[0];
-    const ll = first.marker.getLatLng();
-    const content = (first.type==="firma")
-      ? tooltipFirma(first)
-      : `<b>${first.name}</b><br>${first.ort}`;
-
-    searchPopup = L.popup({
-      closeButton:true,
-      autoClose:false,
-      closeOnClick:false,
-      autoPan:false
-    }).setLatLng(ll).setContent(content);
-
-    searchPopup.openOn(map);
-  }
-
-  // ✅ Zusätzlich: Ortssuche via Nominatim (wenn es ein Ort ist)
   const geo = await geocodeOnce(raw);
   if(geo){
     const ll=[geo.lat,geo.lon];
