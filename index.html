@@ -90,7 +90,7 @@ html,body{height:100%;margin:0}#map{height:100%;width:100%}
 .indexDock{
   position:absolute;
   left:12px;
-  bottom:220px;          /* ✅ etwas höher */
+  bottom:300px;          /* ✅ höher (vorher 170/260) */
   z-index:2600;
   display:flex;
   align-items:flex-start;
@@ -140,53 +140,34 @@ html,body{height:100%;margin:0}#map{height:100%;width:100%}
   border-bottom:1px solid #eee;
   font:14px/1.25 system-ui,Arial;
 }
-
-.indexLeft{
-  display:flex;
-  align-items:center;
-  gap:10px;
-  min-width:0;
-  flex:1;
-}
-
 .indexTitle{
   font-weight:700;
   white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
 }
-
-.indexFirmSearchWrap{
-  display:flex;
-  align-items:center;
-  gap:6px;
-  flex:1;
-  min-width:0;
-}
-
-#indexFirmSearch{
-  width:100%;
-  min-width:140px;
-  padding:6px 8px;
-  border:1px solid #ccc;
-  border-radius:8px;
-  outline:none;
-  box-sizing:border-box;
-}
-
-.indexGo{
-  border:1px solid #ddd;
-  background:#fff;
-  border-radius:8px;
-  cursor:pointer;
-  padding:6px 10px;
-  white-space:nowrap;
-}
-.indexGo:hover{background:#fafafa}
-
 .indexControls{
   display:flex;
   gap:8px;
   align-items:center;
 }
+
+.indexControls input{
+  width:180px;
+  padding:6px 8px;
+  border:1px solid #ccc;
+  border-radius:8px;
+  outline:none;
+}
+.indexControls button{
+  padding:6px 10px;
+  border:1px solid #ddd;
+  background:#fff;
+  border-radius:8px;
+  cursor:pointer;
+}
+.indexControls button:hover{background:#fafafa}
+
 .indexControls select{
   padding:6px 8px;
   border:1px solid #ccc;
@@ -197,11 +178,6 @@ html,body{height:100%;margin:0}#map{height:100%;width:100%}
   padding:10px 12px 12px;
   height:260px;
   box-sizing:border-box;
-}
-.indexNote{
-  font:12px/1.3 system-ui,Arial;
-  opacity:.75;
-  margin-top:8px;
 }
 </style>
 </head>
@@ -273,18 +249,13 @@ html,body{height:100%;margin:0}#map{height:100%;width:100%}
 
   <div class="indexPanel" id="indexPanel">
     <div class="indexHead">
-      <div class="indexLeft">
-        <div class="indexTitle" id="indexFirmTitle">Preisindex</div>
-
-        <!-- ✅ Suchfeld neben Preisindex -->
-        <div class="indexFirmSearchWrap">
-          <input id="indexFirmSearch" list="indexFirmList" placeholder="Firma suchen…">
-          <datalist id="indexFirmList"></datalist>
-          <button class="indexGo" id="indexFirmGo" type="button">Suchen</button>
-        </div>
-      </div>
-
+      <div class="indexTitle" id="indexFirmTitle">Preisindex</div>
       <div class="indexControls">
+        <!-- ✅ Firma suchen -->
+        <input id="indexFirmSearch" placeholder="Firma suchen…" autocomplete="off">
+        <button id="indexFirmSearchBtn" type="button">Suchen</button>
+
+        <!-- ✅ Zeitraum -->
         <select id="indexRange">
           <option value="3">3 Monate</option>
           <option value="6">6 Monate</option>
@@ -294,7 +265,6 @@ html,body{height:100%;margin:0}#map{height:100%;width:100%}
     </div>
     <div class="indexBody">
       <canvas id="indexChart"></canvas>
-      <div class="indexNote" id="indexNote">Tipp: Firma oben suchen → Pfeil öffnen → Linie sehen.</div>
     </div>
   </div>
 </div>
@@ -395,16 +365,20 @@ const indexPanel  = document.getElementById("indexPanel");
 const indexArrow  = document.getElementById("indexArrow");
 const indexRange  = document.getElementById("indexRange");
 const indexFirmTitle = document.getElementById("indexFirmTitle");
-const indexNote = document.getElementById("indexNote");
 const indexFirmSearch = document.getElementById("indexFirmSearch");
-const indexFirmGo = document.getElementById("indexFirmGo");
-const indexFirmList = document.getElementById("indexFirmList");
+const indexFirmSearchBtn = document.getElementById("indexFirmSearchBtn");
 
 /*** ====== STATE / HELPERS ====== ***/
 let currentUnit = unitSelect.value;
 let buildToken = 0;
 
-const num=v=>{v=String(v??"").trim().replace(",",".");v=v.replace(/€/g,"").trim();const n=+v;return isFinite(n)?n:NaN};
+// ✅ robust: entfernt alles außer Zahlen/.-/,
+const num=v=>{
+  v=String(v??"").trim().replace(",",".");
+  v=v.replace(/[^0-9.\-]/g,"");   // <- wichtig
+  const n=+v;
+  return isFinite(n)?n:NaN;
+};
 const lc=s=>String(s??"").toLowerCase().trim();
 const str=v=>String(v??"").trim();
 const uid=()=>Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -544,6 +518,17 @@ function filterByMonths(arr, months){
   return arr.filter(x=>x.date >= cutoff);
 }
 
+// ✅ Case-Insensitive Zugriff auf Headernamen
+function getCellCI(row, names){
+  const keys = Object.keys(row||{});
+  for(const want of names){
+    const w = lc(want);
+    const hit = keys.find(k=>lc(k)===w);
+    if(hit !== undefined) return row[hit];
+  }
+  return "";
+}
+
 async function loadIndexHistoryOnce(){
   if(historyRows) return;
 
@@ -555,12 +540,14 @@ async function loadIndexHistoryOnce(){
 
   historyByFirm = {};
   for(const row of historyRows){
-    const firm = lc(row.Firma ?? row.firma ?? row.Name ?? row.name ?? "");
-    const dateRaw = row.Datum ?? row.datum ?? row.Date ?? row.date ?? "";
-    const loseRaw = row.LosePreis ?? row.losepreis ?? row.Lose ?? row.lose ?? "";
-    const sackRaw = row.SackPreis ?? row.sackpreis ?? row.Sack ?? row.sack ?? "";
+    const firmRaw = getCellCI(row, ["firma","Firma","name","Name"]);
+    const dateRaw = getCellCI(row, ["datum","Datum","date","Date"]);
+    const loseRaw = getCellCI(row, ["losePreis","LosePreis","losepreis","Lose","lose"]);
+    const sackRaw = getCellCI(row, ["sackPreis","SackPreis","sackpreis","Sack","sack"]);
 
+    const firm = lc(firmRaw);
     if(!firm) continue;
+
     const d = parseDateFlex(dateRaw);
     if(!d) continue;
 
@@ -568,6 +555,7 @@ async function loadIndexHistoryOnce(){
     if(!historyByFirm[firm]) historyByFirm[firm] = [];
     historyByFirm[firm].push(o);
   }
+
   for(const k of Object.keys(historyByFirm)){
     historyByFirm[k].sort((a,b)=>a.date-b.date);
   }
@@ -608,7 +596,9 @@ function ensureIndexChart(){
         }
       },
       scales: {
-        y: { ticks: { callback: (v)=> `${Math.round(+v)} €` } }
+        y: {
+          ticks: { callback: (v)=> `${Math.round(+v)} €` }
+        }
       }
     }
   });
@@ -631,7 +621,6 @@ async function renderIndexForFirm(firmaName){
     chart.data.datasets[0].data = [];
     chart.data.datasets[1].data = [];
     chart.update();
-    indexNote.textContent = "Für diese Firma gibt es noch keine Historie im Tab „index“.";
     return;
   }
 
@@ -642,40 +631,16 @@ async function renderIndexForFirm(firmaName){
   chart.data.datasets[0].data = use.map(x=>isFinite(x.lose)?x.lose:null);
   chart.data.datasets[1].data = use.map(x=>isFinite(x.sack)?x.sack:null);
   chart.update();
-
-  indexNote.textContent = "Firma wählen → Pfeil öffnen → Hover zeigt Werte + Differenz.";
 }
 
-/*** ✅ Index-Firmensuche (nur aktualisieren, Panel öffnet NICHT automatisch) ***/
-function refreshIndexFirmSuggestions(){
-  indexFirmList.innerHTML = "";
-  const names = (werke || []).map(w=>str(w.firma)).filter(Boolean);
-  const uniq = [...new Set(names)].sort((a,b)=>a.localeCompare(b,"de"));
-  for(const n of uniq){
-    const opt = document.createElement("option");
-    opt.value = n;
-    indexFirmList.appendChild(opt);
-  }
+// ✅ Suchfeld im Index-Header
+function doIndexSearch(){
+  const name = str(indexFirmSearch.value);
+  if(!name) return;
+  renderIndexForFirm(name);
 }
-
-async function searchIndexFirm(){
-  const q = str(indexFirmSearch.value);
-  if(!q) return;
-
-  // erst exakt, dann "enthält"
-  const exact = (werke || []).find(w=>str(w.firma) === q);
-  let pick = exact ? exact.firma : null;
-
-  if(!pick){
-    const ql = lc(q);
-    const contains = (werke || []).find(w=>lc(w.firma).includes(ql));
-    pick = contains ? contains.firma : q;
-  }
-
-  await renderIndexForFirm(pick);
-}
-indexFirmGo.addEventListener("click", searchIndexFirm);
-indexFirmSearch.addEventListener("keydown", (e)=>{ if(e.key==="Enter"){ e.preventDefault(); searchIndexFirm(); } });
+indexFirmSearchBtn.addEventListener("click", doIndexSearch);
+indexFirmSearch.addEventListener("keydown",(e)=>{ if(e.key==="Enter"){ e.preventDefault(); doIndexSearch(); }});
 
 /*** ====== GEO CACHE (3 Quellen) ====== ***/
 let fileGeoCache = {};
@@ -909,6 +874,7 @@ function findIndex(headers, cands){
   const cs=cands.map(c=>lc(c));
   return hs.findIndex(h=>cs.includes(h));
 }
+
 function parseFirmenArray(table){
   if(!table || table.length<2) return [];
   const headers=(table[0]||[]).map(x=>str(x));
@@ -917,8 +883,8 @@ function parseFirmenArray(table){
   let nameIdx = findIndex(headers, ["firma","name","werk"]); if(nameIdx<0) nameIdx = 0;
   let ortIdx  = findIndex(headers, ["ort","stadt","standort","adresse","location"]); if(ortIdx<0) ortIdx = 1;
 
-  const preisIdx = 2;
-  const standIdx = 3;
+  const preisIdx = 2;   // Spalte C
+  const standIdx = 3;   // Spalte D
 
   let sackIdx = findIndex(headers, ["sackwarenpreis","sackwarepreis","preis_sack","sackpreis","preis sack"]);
   if(sackIdx<0) sackIdx = 4;
@@ -1119,10 +1085,11 @@ function addFirmMarker(w){
 
   const cm=L.circleMarker([c.lat,c.lon],{radius:8,color:farbe,fillColor:farbe,fillOpacity:.85})
     .bindTooltip("",{sticky:true})
-    .on("tooltipopen", ()=>{
+    .on("tooltipopen", async ()=>{
       cm.getTooltip().setContent(tooltipFirma({...w,country_code:c.country_code}));
-      // ✅ nur Daten vorbereiten – Panel öffnet NICHT automatisch
-      renderIndexForFirm(w.firma);
+
+      // ✅ Preisindex für diese Firma aktualisieren (öffnet NICHT automatisch)
+      await renderIndexForFirm(w.firma);
     })
     .on("click",()=>pickPoint(w.firma,{lat:c.lat,lon:c.lon}))
     .on("contextmenu",(ev)=>{
@@ -1362,6 +1329,7 @@ async function runTargetSearch(type, targetPrice){
     .filter(m => m.type==="firma" && map.hasLayer(m.marker))
     .map(m => {
       const isSack = isPellets() && (type === "sack" || type === "bigbag");
+
       const key = `${currentUnit}|${isSack?"sack":"lose"}|${str(m.firma)}`;
       const manual = (isFinite(+manualPrices[key]) && +manualPrices[key]>0) ? +manualPrices[key] : null;
 
@@ -1514,9 +1482,6 @@ async function switchUnit(newUnit){
   const extra = (customFirms[currentUnit] || []);
   werke = baseWerke.concat(extra);
 
-  // ✅ Suggest-Liste für Preisindex aktualisieren
-  refreshIndexFirmSuggestions();
-
   kunden = await loadKundenForUnit(currentUnit);
 
   await buildMap();
@@ -1637,7 +1602,8 @@ searchInput.addEventListener("keydown",async e=>{
   await loadGeoCacheFile();
   refreshLegendThresholdUI();
 
-  ensureIndexChart(); // Chart leer initialisieren
+  // Chart direkt initialisieren
+  ensureIndexChart();
 
   await switchUnit(unitSelect.value);
 })();
