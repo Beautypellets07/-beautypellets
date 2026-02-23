@@ -675,10 +675,21 @@ function ensureIndexChart(){
           }
         }
       },
-      scales: {
-        y: { ticks: { callback: (v)=> `${Math.round(+v)} €` } }
-      }
-    },
+     scales: {
+  x: {
+    ticks: {
+      maxRotation: 0,
+      minRotation: 0,
+      autoSkip: true,
+      maxTicksLimit: 8
+    }
+  },
+  y: { 
+    ticks: { 
+      callback: (v)=> `${Math.round(+v)} €` 
+    } 
+  }
+},
     plugins: [bottomTitlePlugin]
   });
 
