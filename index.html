@@ -691,7 +691,7 @@ async function renderIndexForFirm(firmaName, opts={}){
   activeIndexFirm = str(firmaName);
 
   const lockTag = indexLocked ? "";
-  indexFirmTitle.textContent = firmaName ? `Preisindex – ${firmaName}${lockTag}` : "Preisindex";
+  indexFirmTitle.textContent = firmaName ? `Preisindex – ${firmaName}` : "Preisindex";
 
   const key = normName(firmaName);
   const rows = historyByFirm[key] || [];
