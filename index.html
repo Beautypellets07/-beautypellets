@@ -690,7 +690,7 @@ async function renderIndexForFirm(firmaName, opts={}){
 
   activeIndexFirm = str(firmaName);
 
-  const lockTag = indexLocked ? " (fix)" : "";
+  const lockTag = indexLocked ? "";
   indexFirmTitle.textContent = firmaName ? `Preisindex – ${firmaName}${lockTag}` : "Preisindex";
 
   const key = normName(firmaName);
@@ -699,7 +699,7 @@ async function renderIndexForFirm(firmaName, opts={}){
   const chart = ensureIndexChart();
 
   /* ✅ Überschrift unten mittig im Chart */
-  chart.options.bottomTitleText = firmaName ? `Preisindex – ${firmaName}${lockTag}` : "";
+  chart.options.bottomTitleText = firmaName ? `Preisindex – ${firmaName}` : "";
 
   if(!rows.length){
     chart.data.labels = [];
