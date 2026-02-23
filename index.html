@@ -413,6 +413,14 @@ function sackAktiv(){
   return isPellets() && (chkSackFireflies.checked || chkSack15kg.checked || chkBigBag.checked);
 }
 
+/*** ✅ liest das manuelle Feld "Entfernung (km)" aus (null = kein Filter) ***/
+function getCtxMaxKm(){
+  if(!ctxEl) return null;
+  const el = ctxEl.querySelector("#ctxMaxKm");
+  const v = num(el ? el.value : "");
+  return (isFinite(v) && v > 0) ? v : null;
+}
+
 /*** ====== FARBSCHWELLEN (editierbar + gespeichert) ====== ***/
 const THRESH_KEY = "colorThresholds_EU_v1";
 let thresholds = JSON.parse(localStorage.getItem(THRESH_KEY) || "{}");
@@ -671,21 +679,14 @@ function ensureIndexChart(){
         }
       },
 
-      // ✅ X-Achse immer gerade (keine schrägen Labels)
       scales: {
         x: {
-          ticks: {
-            maxRotation: 0,
-            minRotation: 0,
-            autoSkip: true,
-            maxTicksLimit: 8
-          }
+          ticks: { maxRotation: 0, minRotation: 0, autoSkip: true, maxTicksLimit: 8 }
         },
         y: { ticks: { callback: (v)=> `${Math.round(+v)} €` } }
       }
     },
 
-    // ✅ Plugin MUSS hier stehen (nicht in options!)
     plugins: [bottomTitlePlugin]
   });
 
@@ -823,15 +824,6 @@ let kundenPellets=null, kundenStreusalz=null, kunden=[];
 let alleMarker=[], selectedPoints=[], routeLine=null, searchMarker=null;
 let ctxEl=null, ctxCustomer=null;
 
-/*** ✅ Distance-only Layer (nur km anzeigen) ***/
-let distanceOnlyLayer = null;
-function clearDistanceOnly(){
-  if(distanceOnlyLayer){
-    try{ map.removeLayer(distanceOnlyLayer); }catch(e){}
-    distanceOnlyLayer = null;
-  }
-}
-
 function closeCtx(){ if(ctxEl){ctxEl.remove(); ctxEl=null;} ctxCustomer=null; }
 function stopEvt(el){
   if(!el) return;
@@ -875,7 +867,6 @@ async function deleteCustomFirmById(customId){
 
   closeCtx();
   clearRoute();
-  clearDistanceOnly();
   closeAddFirmModal();
   await switchUnit(currentUnit);
 }
@@ -1378,47 +1369,6 @@ async function showRouteByCoords(aLabel,aCoord,bLabel,bCoord){
 }
 function showRoute(a,b){ return showRouteByCoords(a.label, a.coord, b.label, b.coord); }
 
-/*** ✅ Nur km anzeigen (Linie + Label) ***/
-async function showDistanceOnlyBetween(customerLabel, customerCoord, firmLabel, firmCoord){
-  clearRoute();
-  clearDistanceOnly();
-
-  // Versuche OSRM Distanz (Straße), sonst Luftlinie
-  let distKm = null;
-  let dashed = false;
-  try{
-    distKm = await osrmDistKm(customerCoord, firmCoord);
-  }catch(e){}
-  if(!distKm){
-    distKm = luftlinieKm(customerCoord, firmCoord);
-    dashed = true;
-  }
-
-  const a = [customerCoord.lat, customerCoord.lon];
-  const b = [firmCoord.lat, firmCoord.lon];
-
-  const line = L.polyline([a,b], {color:"blue", weight:4, opacity:.85, dashArray: dashed ? "8 8" : null});
-  const mid = [(a[0]+b[0])/2, (a[1]+b[1])/2];
-  const label = L.marker(mid, {
-    icon: L.divIcon({
-      className: "km-label",
-      html: `<div style="background:white;padding:4px 8px;border-radius:8px;border:1px solid #eee;box-shadow:0 2px 8px rgba(0,0,0,.12);font-weight:700;">
-              ${distKm.toFixed(1)} km
-            </div>`
-    })
-  });
-
-  distanceOnlyLayer = L.layerGroup([line,label]).addTo(map);
-
-  // kleines Popup nur mit km
-  L.popup()
-    .setLatLng(mid)
-    .setContent(`<b>Entfernung:</b> ${customerLabel} ↔ ${firmLabel}<br><b>${distKm.toFixed(1)} km</b> ${dashed?"(Luftlinie)":"(Straße)"}`)
-    .openOn(map);
-
-  map.fitBounds(line.getBounds(), {padding:[40,40]});
-}
-
 /*** ===== PICK / CLEAR ===== */
 function pickPoint(label,coord){
   selectedPoints.push({label,coord});
@@ -1434,13 +1384,9 @@ function clearRoute(){
   selectedPoints = [];
 }
 
-/*** ===== CONTEXT MENU (Zielpreis + km-only) ===== */
+/*** ===== CONTEXT MENU (Zielpreis + Entfernung-Feld) ===== */
 function openCustomerMenu(kunde, coord, mouseEvent){
   closeCtx();
-
-  // Wenn neues Menü geöffnet wird, km-only NICHT automatisch löschen (nur wenn du willst)
-  // clearDistanceOnly();
-
   ctxCustomer = {name:kunde.name, ort:kunde.ort, coord};
 
   const p = map.mouseEventToContainerPoint(mouseEvent);
@@ -1474,22 +1420,15 @@ function openCustomerMenu(kunde, coord, mouseEvent){
       <button class="xbtn" id="ctxClose">×</button>
     </div>
 
-    <!-- ✅ Modus wählen -->
-    <div class="row" style="margin-top:10px">
-      <select id="ctxMode">
-        <option value="target" selected>Zielpreis</option>
-        <option value="km">Nur Entfernung (km)</option>
-      </select>
-    </div>
-
     ${typeRow}
 
-    <div class="row" id="ctxPriceRow">
-      <input id="ctxPrice" type="number" step="0.01" placeholder="Zielpreis (€)">
+    <!-- ✅ NEU: Entfernung manuell -->
+    <div class="row" style="margin-top:10px">
+      <input id="ctxMaxKm" type="number" step="1" placeholder="Entfernung (km) – z.B. 200">
     </div>
 
-    <div class="row hidden" id="ctxKmHint">
-      <div class="small">Klicke unten auf eine Firma → es wird nur die Entfernung angezeigt.</div>
+    <div class="row">
+      <input id="ctxPrice" type="number" step="0.01" placeholder="Zielpreis (€) – Enter">
     </div>
 
     <div class="results" id="ctxResults"></div>
@@ -1498,106 +1437,29 @@ function openCustomerMenu(kunde, coord, mouseEvent){
   cont.appendChild(ctxEl);
   stopEvt(ctxEl);
 
-  const closeBtn = ctxEl.querySelector("#ctxClose");
-  closeBtn.addEventListener("click", closeCtx);
+  ctxEl.querySelector("#ctxClose").addEventListener("click", closeCtx);
 
-  const modeSel = ctxEl.querySelector("#ctxMode");
-  const priceRow = ctxEl.querySelector("#ctxPriceRow");
-  const kmHint = ctxEl.querySelector("#ctxKmHint");
-
-  // Mode change
-  modeSel.addEventListener("change", async ()=>{
-    const mode = modeSel.value;
-    if(mode==="km"){
-      priceRow.classList.add("hidden");
-      kmHint.classList.remove("hidden");
-      await runDistanceList(); // ✅ sofort km Liste zeigen
-    }else{
-      priceRow.classList.remove("hidden");
-      kmHint.classList.add("hidden");
-      const resBox = ctxEl.querySelector("#ctxResults");
-      resBox.innerHTML = `<div class="small">Zielpreis eingeben und Enter drücken…</div>`;
-      const input = ctxEl.querySelector("#ctxPrice");
-      input.focus();
-    }
-  });
+  const resBox = ctxEl.querySelector("#ctxResults");
+  resBox.innerHTML = `<div class="small">Zielpreis eingeben → Enter. (Optional: Entfernung (km) setzen)</div>`;
 
   const input = ctxEl.querySelector("#ctxPrice");
   input.focus();
-
   input.addEventListener("keydown", async (e)=>{
     if(e.key !== "Enter") return;
-
-    const mode = modeSel.value;
-    if(mode !== "target") return;
-
     const target = num(input.value);
     const type = isPellets() ? (ctxEl.querySelector("#ctxType").value) : "lose";
     if(!isFinite(target) || target<=0){ alert("Bitte einen gültigen Zielpreis eingeben."); return; }
     await runTargetSearch(type, target);
   });
-
-  // Initial hint
-  ctxEl.querySelector("#ctxResults").innerHTML = `<div class="small">Zielpreis eingeben und Enter drücken…</div>`;
 }
 
-/*** ✅ km-only Liste (nur Entfernung anzeigen) ***/
-async function runDistanceList(){
-  if(!ctxEl || !ctxCustomer) return;
-  const resBox = ctxEl.querySelector("#ctxResults");
-  resBox.innerHTML = `<div class="small">Berechne Entfernungen…</div>`;
-
-  // nur sichtbare Firmen
-  const firmsVisible = alleMarker
-    .filter(m => m.type==="firma" && map.hasLayer(m.marker))
-    .map(m => ({ ...m }))
-    .filter(m => m._coord && isFinite(m._coord.lat) && isFinite(m._coord.lon));
-
-  if(!firmsVisible.length){
-    resBox.innerHTML = `<div class="small">Keine Firmen sichtbar.</div>`;
-    return;
-  }
-
-  const c = ctxCustomer.coord;
-
-  // erst Luftlinie (schnell) für Sortierung
-  const list = firmsVisible.map(f=>{
-    const d = luftlinieKm({lat:c.lat,lon:c.lon},{lat:f._coord.lat,lon:f._coord.lon});
-    return { f, d };
-  }).sort((a,b)=>a.d-b.d).slice(0, 50);
-
-  // Anzeige (nur km) – Klick zeigt km-only Linie
-  resBox.innerHTML = list.slice(0, 25).map((m,i)=>`
-    <div class="item" data-km-i="${i}">
-      <div><b>${m.f.firma}</b></div>
-      <div class="small">${m.f.ort}</div>
-      <div><b>${m.d.toFixed(1)} km</b> <span class="small">(Luftlinie)</span></div>
-    </div>
-  `).join("");
-
-  // click handler
-  [...resBox.querySelectorAll(".item")].forEach(el=>{
-    el.addEventListener("click", async ()=>{
-      const idx = +el.getAttribute("data-km-i");
-      const m = list[idx];
-      if(!m) return;
-
-      // km-only on map (OSRM wenn möglich, sonst Luftlinie)
-      await showDistanceOnlyBetween(
-        ctxCustomer.name,
-        ctxCustomer.coord,
-        m.f.firma,
-        {lat:m.f._coord.lat, lon:m.f._coord.lon}
-      );
-    });
-  });
-}
-
-/*** ===== Zielpreis Suche (wie vorher) ===== */
+/*** ===== Zielpreis Suche (mit km-Filter) ===== */
 async function runTargetSearch(type, targetPrice){
   if(!ctxEl || !ctxCustomer) return;
   const resBox = ctxEl.querySelector("#ctxResults");
   resBox.innerHTML = `<div class="small">Suche…</div>`;
+
+  const maxKm = getCtxMaxKm();
 
   let firmsVisible = alleMarker
     .filter(m => m.type==="firma" && map.hasLayer(m.marker))
@@ -1625,10 +1487,13 @@ async function runTargetSearch(type, targetPrice){
 
   const c = ctxCustomer.coord;
 
+  // Vorfilter: Luftlinie + optional maxKm
   const pre = firmsVisible.map(f=>{
     const d0 = luftlinieKm({lat:c.lat,lon:c.lon},{lat:f._coord.lat,lon:f._coord.lon});
     return {...f, d0};
-  }).sort((a,b)=>a.d0-b.d0);
+  })
+  .filter(f => !maxKm || f.d0 <= maxKm)
+  .sort((a,b)=>a.d0-b.d0);
 
   const LIMIT = 40;
   const candidates = pre.slice(0, Math.min(LIMIT, pre.length));
@@ -1638,6 +1503,10 @@ async function runTargetSearch(type, targetPrice){
     let dist = null;
     try{ dist = await osrmDistKm({lat:c.lat,lon:c.lon},{lat:f._coord.lat,lon:f._coord.lon}); }catch(e){}
     if(!dist) dist = f.d0;
+
+    // ✅ finaler Filter (Straße oder Luftlinie)
+    if(maxKm && dist > maxKm) continue;
+
     const {total} = calcDeliveredPrice(dist, f.base);
     if(total <= targetPrice) matches.push({ f, distKm: dist, total });
   }
@@ -1645,7 +1514,8 @@ async function runTargetSearch(type, targetPrice){
   matches.sort((a,b)=>a.total-b.total);
 
   if(!matches.length){
-    resBox.innerHTML = `<div class="small">Keine Firma unter ${targetPrice.toFixed(2)} € gefunden.</div>`;
+    const hint = maxKm ? ` innerhalb ${maxKm.toFixed(0)} km` : "";
+    resBox.innerHTML = `<div class="small">Keine Firma unter ${targetPrice.toFixed(2)} €${hint} gefunden.</div>`;
     return;
   }
 
@@ -1749,7 +1619,6 @@ async function switchUnit(newUnit){
   applyUnitUIOnly();
   closeCtx();
   clearRoute();
-  clearDistanceOnly();
   closeAddFirmModal();
 
   setIndexLock(false, null);
@@ -1780,7 +1649,6 @@ document.addEventListener("keydown", (e)=>{
   if(e.key === "Escape"){
     closeAddFirmModal();
     clearRoute();
-    clearDistanceOnly();
     closeCtx();
     setIndexLock(false, null);
     if(activeIndexFirm) renderIndexForFirm(activeIndexFirm, {keepLock:true});
@@ -1844,7 +1712,6 @@ searchInput.addEventListener("keydown",async e=>{
 
   closeCtx();
   clearRoute();
-  clearDistanceOnly();
   closeAddFirmModal();
 
   if(searchMarker){ try{ map.removeLayer(searchMarker); }catch(err){} searchMarker=null; }
