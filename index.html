@@ -837,6 +837,170 @@ function stopEvt(el){
   el.addEventListener("touchstart", e=>e.stopPropagation(), {passive:true});
 }
 
+/*** =========================================================
+ *** ✅ FAST ROUTE ENGINE (Klick = sofort + Route nachladen)
+ *** - Luftlinie sofort anzeigen
+ *** - OSRM Route wird nachgeladen (abbrechbar + Cache)
+ *** ========================================================= */
+let routeAbort = null;
+const ROUTE_MEM = new Map();
+const ROUTE_LS_KEY = "routeCache_v2";
+let ROUTE_LS = {};
+try{ ROUTE_LS = JSON.parse(localStorage.getItem(ROUTE_LS_KEY)||"{}"); }catch(e){ ROUTE_LS = {}; }
+
+function round5(x){ return Math.round(Number(x)*1e5)/1e5; }
+function routeKey(a,b){
+  const A = `${round5(a.lat)},${round5(a.lon)}`;
+  const B = `${round5(b.lat)},${round5(b.lon)}`;
+  return (A < B) ? `${A}|${B}` : `${B}|${A}`;
+}
+function luftlinieKm(a,b){
+  const R=6371,toRad=x=>x*Math.PI/180;
+  const dLat=toRad(b.lat-a.lat), dLon=toRad(b.lon-a.lon);
+  const la1=toRad(a.lat), la2=toRad(b.lat);
+  const h=Math.sin(dLat/2)**2+Math.cos(la1)*Math.cos(la2)*Math.sin(dLon/2)**2;
+  return 2*R*Math.atan2(Math.sqrt(h),Math.sqrt(1-h));
+}
+async function fetchRouteOSRMFull(a,b){
+  if(routeAbort) routeAbort.abort();
+  routeAbort = new AbortController();
+
+  const url=`https://router.project-osrm.org/route/v1/driving/${a.lon},${a.lat};${b.lon},${b.lat}?overview=full&geometries=geojson`;
+  const res=await fetch(url,{signal:routeAbort.signal});
+  if(!res.ok) throw new Error("OSRM failed");
+  const data=await res.json();
+  const r=data?.routes?.[0];
+  if(!r) throw new Error("No route");
+  const distKm = r.distance/1000;
+  const coords = r.geometry.coordinates.map(c=>[c[1],c[0]]);
+  const min=r.duration/60, h=Math.floor(min/60), m=Math.round(min%60);
+  const durStr = h?`${h}h ${m}min`:`${m}min`;
+  return { distKm, coords, durStr, dashed:false };
+}
+async function getRouteCached(a,b){
+  const key=routeKey(a,b);
+  if(ROUTE_MEM.has(key)) return ROUTE_MEM.get(key);
+  if(ROUTE_LS[key]){
+    ROUTE_MEM.set(key, ROUTE_LS[key]);
+    return ROUTE_LS[key];
+  }
+  const out = await fetchRouteOSRMFull(a,b);
+  ROUTE_MEM.set(key,out);
+  ROUTE_LS[key]=out;
+  const keys=Object.keys(ROUTE_LS);
+  if(keys.length>220) delete ROUTE_LS[keys[0]];
+  localStorage.setItem(ROUTE_LS_KEY, JSON.stringify(ROUTE_LS));
+  return out;
+}
+
+/*** ===== ROUTE / PRICE ===== */
+function calcDeliveredPrice(distKm, basePrice){
+  const preisProKm = distKm < 250 ? 2.15 : 1.85;
+  const berechnung = (distKm/24) * preisProKm;
+  const margeFaktor = (currentUnit === "streusalz") ? 1.20 : 1.05;
+  const total = (berechnung + (basePrice||0)) * margeFaktor;
+  return { total, preisProKm, margeFaktor };
+}
+function findFirmInLabels(aLabel,bLabel){
+  return werke.find(w=>w.firma===aLabel) || werke.find(w=>w.firma===bLabel) || null;
+}
+function getBasePriceForFirm(firmObj, ctxType=null){
+  if(!firmObj) return 0;
+
+  // Manuell hat immer Vorrang
+  // Für Zielpreis-Suche kann ctxType explizit Sack/Lose sein
+  if(ctxType){
+    const isSack = isPellets() && (ctxType==="sack" || ctxType==="bigbag");
+    const key = `${currentUnit}|${isSack?"sack":"lose"}|${str(firmObj.firma)}`;
+    const v = manualPrices[key];
+    if(isFinite(+v) && +v>0) return +v;
+    return (isSack ? firmObj._preisSackOrig : firmObj._preisOrig) || 0;
+  }
+
+  const manual = getManualPriceForFirm(firmObj.firma);
+  if(manual) return manual;
+
+  const isSack = isPellets() && sackAktiv();
+  const base = isSack ? firmObj.preisSack : firmObj.preis;
+  return base || 0;
+}
+
+let activeRouteToken = 0;
+async function showRouteByCoordsFast(aLabel,aCoord,bLabel,bCoord, ctxType=null){
+  const myToken = ++activeRouteToken;
+
+  // 1) sofort Luftlinie zeichnen + Popup "lädt…"
+  const airKm = luftlinieKm(aCoord,bCoord);
+  const coords0=[[aCoord.lat,aCoord.lon],[bCoord.lat,bCoord.lon]];
+  if(routeLine) map.removeLayer(routeLine);
+  routeLine=L.polyline(coords0,{color:"blue",weight:5,opacity:.85,dashArray:"8 8"}).addTo(map);
+
+  const firmObj = findFirmInLabels(aLabel,bLabel);
+  const base = getBasePriceForFirm(firmObj, ctxType);
+  const calc0 = calcDeliveredPrice(airKm, base);
+
+  const margeTxt0 = (calc0.margeFaktor===1.20) ? "20%" : "5%";
+  const baseLabel0 = (currentUnit==="streusalz")
+    ? "Werkspreis"
+    : ((isPellets() && (ctxType==="sack" || ctxType==="bigbag" || sackAktiv())) ? "Sackware-Preis" : "Werkspreis");
+
+  const mid0=coords0[0];
+  const p0 = L.popup().setLatLng(mid0).setContent(`
+    <b>Route:</b> ${aLabel} ↔ ${bLabel}<br>
+    <b>Entfernung:</b> ${airKm.toFixed(1)} km (Luftlinie)<br>
+    <b>${baseLabel0}:</b> ${(base||0).toFixed(2)} €<br>
+    <b>Marge:</b> ${margeTxt0}<br>
+    <b>Gesamtkosten:</b> <span style="color:green;font-size:1.1em">${calc0.total.toFixed(2)} €</span><br>
+    <div class="small" style="margin-top:6px">Route wird geladen…</div>
+  `);
+  p0.openOn(map);
+
+  try{
+    // 2) echte Route nachladen (abbrechbar + Cache)
+    const r = await getRouteCached(aCoord,bCoord);
+    if(myToken !== activeRouteToken) return;
+
+    if(routeLine) map.removeLayer(routeLine);
+    routeLine=L.polyline(r.coords,{color:"blue",weight:5,opacity:.85}).addTo(map);
+
+    const calc = calcDeliveredPrice(r.distKm, base);
+    const margeTxt = (calc.margeFaktor===1.20) ? "20%" : "5%";
+
+    const mid=r.coords[Math.floor(r.coords.length/2)] || r.coords[0] || coords0[0];
+    L.popup().setLatLng(mid).setContent(`
+      <b>Route:</b> ${aLabel} ↔ ${bLabel}<br>
+      <b>Entfernung:</b> ${r.distKm.toFixed(1)} km (Straße)<br>
+      ${r.durStr?`<b>Dauer:</b> ${r.durStr}<br>`:""}
+      <b>${baseLabel0}:</b> ${(base||0).toFixed(2)} €<br>
+      <b>Marge:</b> ${margeTxt}<br>
+      <b>Gesamtkosten:</b> <span style="color:green;font-size:1.1em">${calc.total.toFixed(2)} €</span>
+    `).openOn(map);
+
+    try{ map.fitBounds(routeLine.getBounds(),{padding:[40,40]}); }catch(e){}
+  }catch(err){
+    if(err?.name==="AbortError") return;
+    // fallback bleibt Luftlinie
+  }
+}
+function showRoute(a,b){ return showRouteByCoordsFast(a.label, a.coord, b.label, b.coord); }
+
+/*** ===== PICK / CLEAR ===== */
+function pickPoint(label,coord){
+  selectedPoints.push({label,coord});
+  if(selectedPoints.length===2){
+    const [a,b]=selectedPoints;
+    selectedPoints=[];
+    showRoute(a,b);
+  }
+}
+function clearRoute(){
+  activeRouteToken++;
+  if(routeAbort) try{ routeAbort.abort(); }catch(e){}
+  if(routeLine){ map.removeLayer(routeLine); routeLine = null; }
+  map.closePopup();
+  selectedPoints = [];
+}
+
 /*** ====== CUSTOM FIRMS (Taste F) ====== ***/
 const CUSTOM_KEY = "customFirms_EU_v1";
 let customFirms = JSON.parse(localStorage.getItem(CUSTOM_KEY) || "{}");
@@ -1288,103 +1452,9 @@ async function buildMap(){
   updateLayers();
 }
 
-/*** ===== ROUTE / PRICE ===== */
-function luftlinieKm(a,b){
-  const R=6371,toRad=x=>x*Math.PI/180, dLat=toRad(b.lat-a.lat), dLon=toRad(b.lon-a.lon), la1=toRad(a.lat), la2=toRad(b.lat);
-  const h=Math.sin(dLat/2)**2+Math.cos(la1)*Math.cos(la2)*Math.sin(dLon/2)**2;
-  return 2*R*Math.atan2(Math.sqrt(h),Math.sqrt(1-h));
-}
-async function osrmDistKm(a,b){
-  const url=`https://router.project-osrm.org/route/v1/driving/${a.lon},${a.lat};${b.lon},${b.lat}?overview=false`;
-  const res=await fetch(url);
-  const data=res.ok?await res.json():null;
-  if(data?.routes?.length) return data.routes[0].distance/1000;
-  return null;
-}
-function calcDeliveredPrice(distKm, basePrice){
-  const preisProKm = distKm < 250 ? 2.15 : 1.85;
-  const berechnung = (distKm/24) * preisProKm;
-  const margeFaktor = (currentUnit === "streusalz") ? 1.20 : 1.05;
-  const total = (berechnung + (basePrice||0)) * margeFaktor;
-  return { total, preisProKm, margeFaktor };
-}
-function findFirmInLabels(aLabel,bLabel){
-  return werke.find(w=>w.firma===aLabel) || werke.find(w=>w.firma===bLabel) || null;
-}
-function getBasePriceForFirm(firmObj){
-  if(!firmObj) return 0;
-
-  const manual = getManualPriceForFirm(firmObj.firma);
-  if(manual) return manual;
-
-  const isSack = isPellets() && sackAktiv();
-  const base = isSack ? firmObj.preisSack : firmObj.preis;
-  return base || 0;
-}
-async function showRouteByCoords(aLabel,aCoord,bLabel,bCoord){
-  const osrm=`https://router.project-osrm.org/route/v1/driving/${aCoord.lon},${aCoord.lat};${bCoord.lon},${bCoord.lat}?overview=full&geometries=geojson`;
-  let distKm=null, coords=null, dashed=false, durStr="";
-  try{
-    const res=await fetch(osrm);
-    const data=res.ok?await res.json():null;
-    if(data?.routes?.length){
-      const r=data.routes[0];
-      distKm=r.distance/1000;
-      const min=r.duration/60, h=Math.floor(min/60), m=Math.round(min%60);
-      durStr=h?`${h}h ${m}min`:`${m}min`;
-      coords=r.geometry.coordinates.map(c=>[c[1],c[0]]);
-    }
-  }catch(e){}
-  if(!distKm){
-    distKm=luftlinieKm(aCoord,bCoord);
-    coords=[[aCoord.lat,aCoord.lon],[bCoord.lat,bCoord.lon]];
-    dashed=true;
-  }
-
-  const firmObj = findFirmInLabels(aLabel,bLabel);
-  const base = getBasePriceForFirm(firmObj);
-  const {total, preisProKm, margeFaktor} = calcDeliveredPrice(distKm, base);
-
-  if(routeLine) map.removeLayer(routeLine);
-  routeLine=L.polyline(coords,{color:"blue",weight:5,opacity:.85,dashArray:dashed?"8 8":null}).addTo(map);
-  const mid=coords[Math.floor(coords.length/2)];
-  const margeTxt = (margeFaktor===1.20) ? "20%" : "5%";
-
-  const baseLabel = (currentUnit==="streusalz")
-    ? "Werkspreis"
-    : ((isPellets() && sackAktiv()) ? "Sackware-Preis" : "Werkspreis");
-
-  L.popup().setLatLng(mid).setContent(`
-    <b>Route:</b> ${aLabel} ↔ ${bLabel}<br>
-    <b>Entfernung:</b> ${distKm.toFixed(1)} km ${dashed?"(Luftlinie)":"(Straße)"}<br>
-    ${durStr?`<b>Dauer:</b> ${durStr}<br>`:""}
-    <b>Preis pro km:</b> ${preisProKm.toFixed(2)} €<br>
-    <b>${baseLabel}:</b> ${(base||0).toFixed(2)} €<br>
-    <b>Marge:</b> ${margeTxt}<br>
-    <b>Gesamtkosten:</b> <span style="color:green;font-size:1.1em">${total.toFixed(2)} €</span>
-    ${dashed?`<br><small>Keine Straßenroute verfügbar → Luftlinie gestrichelt.</small>`:""}
-  `).openOn(map);
-
-  map.fitBounds(routeLine.getBounds(),{padding:[40,40]});
-}
-function showRoute(a,b){ return showRouteByCoords(a.label, a.coord, b.label, b.coord); }
-
-/*** ===== PICK / CLEAR ===== */
-function pickPoint(label,coord){
-  selectedPoints.push({label,coord});
-  if(selectedPoints.length===2){
-    const [a,b]=selectedPoints;
-    selectedPoints=[];
-    showRoute(a,b);
-  }
-}
-function clearRoute(){
-  if(routeLine){ map.removeLayer(routeLine); routeLine = null; }
-  map.closePopup();
-  selectedPoints = [];
-}
-
 /*** ===== CONTEXT MENU (Zielpreis + Entfernung-Feld) ===== */
+let ctxLastMatches = []; // ✅ merkt Treffer, damit Klick im Ergebnis Route lädt
+
 function openCustomerMenu(kunde, coord, mouseEvent){
   closeCtx();
   ctxCustomer = {name:kunde.name, ort:kunde.ort, coord};
@@ -1422,9 +1492,9 @@ function openCustomerMenu(kunde, coord, mouseEvent){
 
     ${typeRow}
 
-    <!-- ✅ NEU: Entfernung manuell -->
+    <!-- ✅ Entfernung -->
     <div class="row" style="margin-top:10px">
-      <input id="ctxMaxKm" type="number" step="1" placeholder="Entfernung (km) – z.B. 200">
+      <input id="ctxMaxKm" type="number" step="1" placeholder="Umkreis (km) – z.B. 200">
     </div>
 
     <div class="row">
@@ -1440,7 +1510,25 @@ function openCustomerMenu(kunde, coord, mouseEvent){
   ctxEl.querySelector("#ctxClose").addEventListener("click", closeCtx);
 
   const resBox = ctxEl.querySelector("#ctxResults");
-  resBox.innerHTML = `<div class="small">Zielpreis eingeben → Enter. (Optional: Entfernung (km) setzen)</div>`;
+  resBox.innerHTML = `<div class="small">Zielpreis eingeben → Enter. (Optional: Umkreis (km) setzen)</div>`;
+
+  // ✅ Klick auf Treffer → Route (Straße) laden
+  resBox.addEventListener("click",(e)=>{
+    const item = e.target.closest?.(".item");
+    if(!item) return;
+    const idx = +item.getAttribute("data-i");
+    const hit = ctxLastMatches[idx];
+    if(!hit || !ctxCustomer) return;
+
+    // Route Kunde -> Firma (mit echtem OSRM nachladen)
+    showRouteByCoordsFast(
+      ctxCustomer.name,
+      ctxCustomer.coord,
+      hit.f.firma,
+      {lat: hit.f._coord.lat, lon: hit.f._coord.lon},
+      hit.ctxType
+    );
+  });
 
   const input = ctxEl.querySelector("#ctxPrice");
   input.focus();
@@ -1453,19 +1541,22 @@ function openCustomerMenu(kunde, coord, mouseEvent){
   });
 }
 
-/*** ===== Zielpreis Suche (mit km-Filter) ===== */
+/*** ===== Zielpreis Suche (✅ jetzt: ALLE im Umkreis, super schnell) =====
+ *  - Filtert & rechnet komplett mit Luftlinie => sofort & zeigt wirklich ALLE
+ *  - Beim Klick auf einen Treffer: echte Straßenroute + echte km werden geladen
+ */
 async function runTargetSearch(type, targetPrice){
   if(!ctxEl || !ctxCustomer) return;
   const resBox = ctxEl.querySelector("#ctxResults");
   resBox.innerHTML = `<div class="small">Suche…</div>`;
+  ctxLastMatches = [];
 
-  const maxKm = getCtxMaxKm();
+  const maxKm = getCtxMaxKm(); // Umkreis
 
   let firmsVisible = alleMarker
     .filter(m => m.type==="firma" && map.hasLayer(m.marker))
     .map(m => {
       const isSack = isPellets() && (type === "sack" || type === "bigbag");
-
       const key = `${currentUnit}|${isSack?"sack":"lose"}|${str(m.firma)}`;
       const manual = (isFinite(+manualPrices[key]) && +manualPrices[key]>0) ? +manualPrices[key] : null;
 
@@ -1487,28 +1578,18 @@ async function runTargetSearch(type, targetPrice){
 
   const c = ctxCustomer.coord;
 
-  // Vorfilter: Luftlinie + optional maxKm
-  const pre = firmsVisible.map(f=>{
-    const d0 = luftlinieKm({lat:c.lat,lon:c.lon},{lat:f._coord.lat,lon:f._coord.lon});
-    return {...f, d0};
-  })
-  .filter(f => !maxKm || f.d0 <= maxKm)
-  .sort((a,b)=>a.d0-b.d0);
-
-  const LIMIT = 40;
-  const candidates = pre.slice(0, Math.min(LIMIT, pre.length));
-
+  // ✅ 100% schnell: alles mit Luftlinie rechnen + Umkreis-Filter
   const matches = [];
-  for(const f of candidates){
-    let dist = null;
-    try{ dist = await osrmDistKm({lat:c.lat,lon:c.lon},{lat:f._coord.lat,lon:f._coord.lon}); }catch(e){}
-    if(!dist) dist = f.d0;
+  for(const f of firmsVisible){
+    const dist = luftlinieKm({lat:c.lat,lon:c.lon},{lat:f._coord.lat,lon:f._coord.lon});
 
-    // ✅ finaler Filter (Straße oder Luftlinie)
     if(maxKm && dist > maxKm) continue;
 
     const {total} = calcDeliveredPrice(dist, f.base);
-    if(total <= targetPrice) matches.push({ f, distKm: dist, total });
+
+    if(total <= targetPrice){
+      matches.push({ f, distKm: dist, total, ctxType:type });
+    }
   }
 
   matches.sort((a,b)=>a.total-b.total);
@@ -1519,6 +1600,8 @@ async function runTargetSearch(type, targetPrice){
     return;
   }
 
+  ctxLastMatches = matches;
+
   const pill = isPellets()
     ? (type==="bigbag" ? "Big Bag" : (type==="sack" ? "Sackware" : "Lose"))
     : "Streusalz";
@@ -1527,15 +1610,21 @@ async function runTargetSearch(type, targetPrice){
     ? ((type==="sack" || type==="bigbag") ? "Sackware-Preis" : "Werkspreis")
     : "Werkspreis";
 
-  resBox.innerHTML = matches.slice(0,20).map((m,i)=>`
+  resBox.innerHTML = `
+    <div class="small" style="margin-bottom:6px">
+      Treffer: <b>${matches.length}</b>
+      ${maxKm ? ` • Umkreis: <b>${maxKm.toFixed(0)} km</b>` : ""}
+      <br>Entfernung hier = <b>Luftlinie</b> (für Speed). Klick auf Firma → <b>Straßenroute</b> wird geladen.
+    </div>
+  ` + matches.slice(0,200).map((m,i)=>`
     <div class="item" data-i="${i}">
       <div><b>${m.f.firma}</b><span class="pill">${pill}</span></div>
       <div class="small">${m.f.ort}</div>
-      <div class="small"><b>Entfernung:</b> ${m.distKm.toFixed(1)} km</div>
+      <div class="small"><b>Entfernung:</b> ${m.distKm.toFixed(1)} km (Luftlinie)</div>
       <div class="small"><b>${baseLabel}:</b> ${m.f.base.toFixed(2)} €</div>
       <div><b>Lieferpreis:</b> ${m.total.toFixed(2)} €</div>
     </div>
-  `).join("");
+  `).join("") + (matches.length>200 ? `<div class="small">Es werden nur die ersten 200 angezeigt (Treffer insgesamt: ${matches.length}).</div>` : "");
 }
 
 /*** ===== LAYERS ===== */
