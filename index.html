@@ -267,7 +267,6 @@ html,body{height:100%;margin:0}#map{height:100%;width:100%}
   <div class="indexPanel" id="indexPanel">
     <div class="indexHead">
       <div class="indexTitleWrap">
-        <!-- oben links NICHT mehr anzeigen -->
         <div class="indexTitle" id="indexFirmTitle"></div>
         <button class="indexLockBtn" id="indexLockBtn" type="button" title="Index entsperren">🔓</button>
       </div>
@@ -824,6 +823,15 @@ let kundenPellets=null, kundenStreusalz=null, kunden=[];
 let alleMarker=[], selectedPoints=[], routeLine=null, searchMarker=null;
 let ctxEl=null, ctxCustomer=null;
 
+/*** ✅ Distance-only Layer (nur km anzeigen) ***/
+let distanceOnlyLayer = null;
+function clearDistanceOnly(){
+  if(distanceOnlyLayer){
+    try{ map.removeLayer(distanceOnlyLayer); }catch(e){}
+    distanceOnlyLayer = null;
+  }
+}
+
 function closeCtx(){ if(ctxEl){ctxEl.remove(); ctxEl=null;} ctxCustomer=null; }
 function stopEvt(el){
   if(!el) return;
@@ -867,6 +875,7 @@ async function deleteCustomFirmById(customId){
 
   closeCtx();
   clearRoute();
+  clearDistanceOnly();
   closeAddFirmModal();
   await switchUnit(currentUnit);
 }
@@ -1369,6 +1378,47 @@ async function showRouteByCoords(aLabel,aCoord,bLabel,bCoord){
 }
 function showRoute(a,b){ return showRouteByCoords(a.label, a.coord, b.label, b.coord); }
 
+/*** ✅ Nur km anzeigen (Linie + Label) ***/
+async function showDistanceOnlyBetween(customerLabel, customerCoord, firmLabel, firmCoord){
+  clearRoute();
+  clearDistanceOnly();
+
+  // Versuche OSRM Distanz (Straße), sonst Luftlinie
+  let distKm = null;
+  let dashed = false;
+  try{
+    distKm = await osrmDistKm(customerCoord, firmCoord);
+  }catch(e){}
+  if(!distKm){
+    distKm = luftlinieKm(customerCoord, firmCoord);
+    dashed = true;
+  }
+
+  const a = [customerCoord.lat, customerCoord.lon];
+  const b = [firmCoord.lat, firmCoord.lon];
+
+  const line = L.polyline([a,b], {color:"blue", weight:4, opacity:.85, dashArray: dashed ? "8 8" : null});
+  const mid = [(a[0]+b[0])/2, (a[1]+b[1])/2];
+  const label = L.marker(mid, {
+    icon: L.divIcon({
+      className: "km-label",
+      html: `<div style="background:white;padding:4px 8px;border-radius:8px;border:1px solid #eee;box-shadow:0 2px 8px rgba(0,0,0,.12);font-weight:700;">
+              ${distKm.toFixed(1)} km
+            </div>`
+    })
+  });
+
+  distanceOnlyLayer = L.layerGroup([line,label]).addTo(map);
+
+  // kleines Popup nur mit km
+  L.popup()
+    .setLatLng(mid)
+    .setContent(`<b>Entfernung:</b> ${customerLabel} ↔ ${firmLabel}<br><b>${distKm.toFixed(1)} km</b> ${dashed?"(Luftlinie)":"(Straße)"}`)
+    .openOn(map);
+
+  map.fitBounds(line.getBounds(), {padding:[40,40]});
+}
+
 /*** ===== PICK / CLEAR ===== */
 function pickPoint(label,coord){
   selectedPoints.push({label,coord});
@@ -1384,9 +1434,13 @@ function clearRoute(){
   selectedPoints = [];
 }
 
-/*** ===== CONTEXT MENU (Zielpreis) ===== */
+/*** ===== CONTEXT MENU (Zielpreis + km-only) ===== */
 function openCustomerMenu(kunde, coord, mouseEvent){
   closeCtx();
+
+  // Wenn neues Menü geöffnet wird, km-only NICHT automatisch löschen (nur wenn du willst)
+  // clearDistanceOnly();
+
   ctxCustomer = {name:kunde.name, ort:kunde.ort, coord};
 
   const p = map.mouseEventToContainerPoint(mouseEvent);
@@ -1395,7 +1449,7 @@ function openCustomerMenu(kunde, coord, mouseEvent){
   ctxEl = document.createElement("div");
   ctxEl.className = "ctxbox";
   ctxEl.style.left = Math.min(Math.max(10, p.x), cont.clientWidth-300) + "px";
-  ctxEl.style.top  = Math.min(Math.max(10, p.y), cont.clientHeight-320) + "px";
+  ctxEl.style.top  = Math.min(Math.max(10, p.y), cont.clientHeight-360) + "px";
 
   const typeRow = isPellets() ? `
     <div class="row" style="margin-top:10px">
@@ -1420,10 +1474,22 @@ function openCustomerMenu(kunde, coord, mouseEvent){
       <button class="xbtn" id="ctxClose">×</button>
     </div>
 
+    <!-- ✅ Modus wählen -->
+    <div class="row" style="margin-top:10px">
+      <select id="ctxMode">
+        <option value="target" selected>Zielpreis</option>
+        <option value="km">Nur Entfernung (km)</option>
+      </select>
+    </div>
+
     ${typeRow}
 
-    <div class="row">
+    <div class="row" id="ctxPriceRow">
       <input id="ctxPrice" type="number" step="0.01" placeholder="Zielpreis (€)">
+    </div>
+
+    <div class="row hidden" id="ctxKmHint">
+      <div class="small">Klicke unten auf eine Firma → es wird nur die Entfernung angezeigt.</div>
     </div>
 
     <div class="results" id="ctxResults"></div>
@@ -1432,19 +1498,102 @@ function openCustomerMenu(kunde, coord, mouseEvent){
   cont.appendChild(ctxEl);
   stopEvt(ctxEl);
 
-  ctxEl.querySelector("#ctxClose").addEventListener("click", closeCtx);
+  const closeBtn = ctxEl.querySelector("#ctxClose");
+  closeBtn.addEventListener("click", closeCtx);
+
+  const modeSel = ctxEl.querySelector("#ctxMode");
+  const priceRow = ctxEl.querySelector("#ctxPriceRow");
+  const kmHint = ctxEl.querySelector("#ctxKmHint");
+
+  // Mode change
+  modeSel.addEventListener("change", async ()=>{
+    const mode = modeSel.value;
+    if(mode==="km"){
+      priceRow.classList.add("hidden");
+      kmHint.classList.remove("hidden");
+      await runDistanceList(); // ✅ sofort km Liste zeigen
+    }else{
+      priceRow.classList.remove("hidden");
+      kmHint.classList.add("hidden");
+      const resBox = ctxEl.querySelector("#ctxResults");
+      resBox.innerHTML = `<div class="small">Zielpreis eingeben und Enter drücken…</div>`;
+      const input = ctxEl.querySelector("#ctxPrice");
+      input.focus();
+    }
+  });
 
   const input = ctxEl.querySelector("#ctxPrice");
   input.focus();
+
   input.addEventListener("keydown", async (e)=>{
     if(e.key !== "Enter") return;
+
+    const mode = modeSel.value;
+    if(mode !== "target") return;
+
     const target = num(input.value);
     const type = isPellets() ? (ctxEl.querySelector("#ctxType").value) : "lose";
     if(!isFinite(target) || target<=0){ alert("Bitte einen gültigen Zielpreis eingeben."); return; }
     await runTargetSearch(type, target);
   });
+
+  // Initial hint
+  ctxEl.querySelector("#ctxResults").innerHTML = `<div class="small">Zielpreis eingeben und Enter drücken…</div>`;
 }
 
+/*** ✅ km-only Liste (nur Entfernung anzeigen) ***/
+async function runDistanceList(){
+  if(!ctxEl || !ctxCustomer) return;
+  const resBox = ctxEl.querySelector("#ctxResults");
+  resBox.innerHTML = `<div class="small">Berechne Entfernungen…</div>`;
+
+  // nur sichtbare Firmen
+  const firmsVisible = alleMarker
+    .filter(m => m.type==="firma" && map.hasLayer(m.marker))
+    .map(m => ({ ...m }))
+    .filter(m => m._coord && isFinite(m._coord.lat) && isFinite(m._coord.lon));
+
+  if(!firmsVisible.length){
+    resBox.innerHTML = `<div class="small">Keine Firmen sichtbar.</div>`;
+    return;
+  }
+
+  const c = ctxCustomer.coord;
+
+  // erst Luftlinie (schnell) für Sortierung
+  const list = firmsVisible.map(f=>{
+    const d = luftlinieKm({lat:c.lat,lon:c.lon},{lat:f._coord.lat,lon:f._coord.lon});
+    return { f, d };
+  }).sort((a,b)=>a.d-b.d).slice(0, 50);
+
+  // Anzeige (nur km) – Klick zeigt km-only Linie
+  resBox.innerHTML = list.slice(0, 25).map((m,i)=>`
+    <div class="item" data-km-i="${i}">
+      <div><b>${m.f.firma}</b></div>
+      <div class="small">${m.f.ort}</div>
+      <div><b>${m.d.toFixed(1)} km</b> <span class="small">(Luftlinie)</span></div>
+    </div>
+  `).join("");
+
+  // click handler
+  [...resBox.querySelectorAll(".item")].forEach(el=>{
+    el.addEventListener("click", async ()=>{
+      const idx = +el.getAttribute("data-km-i");
+      const m = list[idx];
+      if(!m) return;
+
+      // km-only on map (OSRM wenn möglich, sonst Luftlinie)
+      await showDistanceOnlyBetween(
+        ctxCustomer.name,
+        ctxCustomer.coord,
+        m.f.firma,
+        {lat:m.f._coord.lat, lon:m.f._coord.lon}
+      );
+    });
+  });
+}
+
+/*** ===== Zielpreis Suche (wie vorher) ===== */
 async function runTargetSearch(type, targetPrice){
   if(!ctxEl || !ctxCustomer) return;
   const resBox = ctxEl.querySelector("#ctxResults");
@@ -1600,6 +1749,7 @@ async function switchUnit(newUnit){
   applyUnitUIOnly();
   closeCtx();
   clearRoute();
+  clearDistanceOnly();
   closeAddFirmModal();
 
   setIndexLock(false, null);
@@ -1630,6 +1780,7 @@ document.addEventListener("keydown", (e)=>{
   if(e.key === "Escape"){
     closeAddFirmModal();
     clearRoute();
+    clearDistanceOnly();
     closeCtx();
     setIndexLock(false, null);
     if(activeIndexFirm) renderIndexForFirm(activeIndexFirm, {keepLock:true});
@@ -1693,6 +1844,7 @@ searchInput.addEventListener("keydown",async e=>{
 
   closeCtx();
   clearRoute();
+  clearDistanceOnly();
   closeAddFirmModal();
 
   if(searchMarker){ try{ map.removeLayer(searchMarker); }catch(err){} searchMarker=null; }
